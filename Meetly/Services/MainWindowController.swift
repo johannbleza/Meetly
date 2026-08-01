@@ -11,6 +11,7 @@ final class MainWindowController {
     func register(_ window: NSWindow) {
         guard !(window is NSPanel) else { return }
         mainWindow = window
+        ScreenShareExclusion.apply(to: window)
     }
 
     func hideMainWindow() {
@@ -19,6 +20,9 @@ final class MainWindowController {
 
     func showMainWindow() {
         mainWindow?.makeKeyAndOrderFront(nil)
+        if let mainWindow {
+            ScreenShareExclusion.apply(to: mainWindow)
+        }
         NSApplication.shared.activate(ignoringOtherApps: true)
     }
 }

@@ -3,11 +3,13 @@
 //  Meetly
 //
 
+import AppKit
 import SwiftData
 import SwiftUI
 
 @main
 struct MeetlyApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var sessionManager = SessionManager()
 
     var sharedModelContainer: ModelContainer = {
@@ -53,5 +55,11 @@ struct MeetlyApp: App {
         }
         .modelContainer(sharedModelContainer)
         .defaultSize(width: 1100, height: 720)
+    }
+}
+
+private final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        ScreenShareExclusion.applyToAllWindows()
     }
 }

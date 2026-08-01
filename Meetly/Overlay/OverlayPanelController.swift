@@ -23,7 +23,10 @@ final class OverlayPanelController {
 
     func show() {
         rebuildPanelIfNeeded()
-        panel?.orderFrontRegardless()
+        if let panel {
+            ScreenShareExclusion.apply(to: panel)
+            panel.orderFrontRegardless()
+        }
     }
 
     func hide() {
@@ -31,7 +34,10 @@ final class OverlayPanelController {
     }
 
     func activateForInput() {
-        panel?.makeKeyAndOrderFront(nil)
+        if let panel {
+            panel.makeKeyAndOrderFront(nil)
+            ScreenShareExclusion.apply(to: panel)
+        }
     }
 
     func updatePreferredSize(_ size: CGSize) {
@@ -99,6 +105,7 @@ final class OverlayPanelController {
             ])
         }
 
+        ScreenShareExclusion.apply(to: panel)
         positionPanelAtTopCenter(panel)
         self.panel = panel
     }
