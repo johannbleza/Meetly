@@ -30,6 +30,7 @@ final class SessionManager {
     private(set) var isOverlayVisible = false
     private(set) var aiProviderSelection: AIProvider = AppSettings.aiProvider
     private(set) var lastCompletedSessionID: UUID?
+    var requestedHomePanel: HomePanel?
 
     private let audioCaptureService = AudioCaptureService()
     private let transcriptionService = LiveTranscriptionService()
@@ -60,6 +61,11 @@ final class SessionManager {
 
     func configure(modelContext: ModelContext) {
         self.modelContext = modelContext
+    }
+
+    func openSettings() {
+        requestedHomePanel = .settings
+        MainWindowController.shared.showMainWindow()
     }
 
     func toggleOverlay() {

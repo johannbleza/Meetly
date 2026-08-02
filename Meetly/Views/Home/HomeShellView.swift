@@ -64,6 +64,11 @@ struct HomeShellView: View {
             selectedPanel = .meetings
             selectedSessionID = sessionID
         }
+        .onChange(of: sessionManager.requestedHomePanel) { _, panel in
+            guard let panel else { return }
+            selectedPanel = panel
+            sessionManager.requestedHomePanel = nil
+        }
         .onChange(of: sessionPendingDelete) { _, newValue in
             showDeleteConfirmation = newValue != nil
         }

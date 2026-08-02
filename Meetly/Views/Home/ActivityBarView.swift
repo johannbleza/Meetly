@@ -1,11 +1,5 @@
 import SwiftUI
 
-enum HomePanel: Hashable {
-    case meetings
-    case archived
-    case settings
-}
-
 struct ActivityBarView: View {
     @Binding var selectedPanel: HomePanel
 

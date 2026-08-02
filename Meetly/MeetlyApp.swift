@@ -55,6 +55,14 @@ struct MeetlyApp: App {
         }
         .modelContainer(sharedModelContainer)
         .defaultSize(width: 1100, height: 720)
+
+        MenuBarExtra {
+            MenuBarContentView(sessionManager: sessionManager)
+                .modelContainer(sharedModelContainer)
+        } label: {
+            MenuBarIconLabel(sessionManager: sessionManager)
+        }
+        .menuBarExtraStyle(.menu)
     }
 }
 
