@@ -1,5 +1,17 @@
 import Foundation
 
+struct ChatImageAttachment: Equatable, Identifiable {
+    let id: UUID
+    let data: Data
+    let mimeType: String
+
+    init(id: UUID = UUID(), data: Data, mimeType: String = "image/jpeg") {
+        self.id = id
+        self.data = data
+        self.mimeType = mimeType
+    }
+}
+
 enum ChatMessageKind: Equatable {
     case transcript
     case userQuestion
@@ -29,6 +41,7 @@ struct ChatMessage: Identifiable, Equatable {
     var text: String
     let timestamp: Date
     var isPartial: Bool
+    var imageAttachments: [ChatImageAttachment]
 
     init(
         id: UUID = UUID(),
@@ -36,7 +49,8 @@ struct ChatMessage: Identifiable, Equatable {
         sender: ChatMessageSender,
         text: String,
         timestamp: Date = .now,
-        isPartial: Bool = false
+        isPartial: Bool = false,
+        imageAttachments: [ChatImageAttachment] = []
     ) {
         self.id = id
         self.kind = kind
@@ -44,5 +58,6 @@ struct ChatMessage: Identifiable, Equatable {
         self.text = text
         self.timestamp = timestamp
         self.isPartial = isPartial
+        self.imageAttachments = imageAttachments
     }
 }

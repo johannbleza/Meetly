@@ -56,7 +56,12 @@ struct MenuBarContentView: View {
     @ViewBuilder
     private var activeMeetingMenu: some View {
         TimelineView(.periodic(from: .now, by: 1)) { _ in
-            Text("\(sessionManager.state == .paused ? "Paused" : "Recording") • \(MeetingTimeFormatting.elapsed(sessionManager.sessionElapsedTime))")
+            Label {
+                Text("\(sessionManager.state == .paused ? "Paused" : "Recording") • \(MeetingTimeFormatting.elapsed(sessionManager.sessionElapsedTime))")
+            } icon: {
+                Image(systemName: sessionManager.state == .paused ? "pause.circle.fill" : "record.circle.fill")
+                    .foregroundStyle(sessionManager.state == .paused ? .yellow : .red)
+            }
         }
         .disabled(true)
 
@@ -215,12 +220,14 @@ struct MenuBarContentView: View {
 enum MenuBarIcon {
     static func systemImage(for state: MeetingState) -> String {
         switch state {
-        case .idle, .summarizing:
+        case .idle:
             "waveform.circle"
         case .recording:
-            "mic.fill"
+            "record.circle.fill"
         case .paused:
-            "pause.circle"
+            "pause.circle.fill"
+        case .summarizing:
+            "sparkles"
         }
     }
 }
@@ -230,8 +237,9 @@ struct MenuBarIconLabel: View {
 
     var body: some View {
         Image(systemName: MenuBarIcon.systemImage(for: sessionManager.state))
-            .symbolRenderingMode(sessionManager.state == .recording ? .multicolor : .monochrome)
+            .symbolRenderingMode(.monochrome)
             .foregroundStyle(iconColor)
+            .symbolEffect(.pulse, options: .repeating, isActive: sessionManager.state == .recording)
     }
 
     private var iconColor: Color {
@@ -239,6 +247,8 @@ struct MenuBarIconLabel: View {
         case .recording:
             .red
         case .paused:
+            .yellow
+        case .summarizing:
             .secondary
         default:
             .primary

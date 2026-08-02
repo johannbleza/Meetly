@@ -27,6 +27,7 @@ final class SessionManager {
     private(set) var isLiveSubtitlePartial = false
     private(set) var transcriptHistory: [String] = []
     private(set) var activeQuestion: String?
+    private(set) var activeQuestionImages: [ChatImageAttachment] = []
     private(set) var activeAnswer: String?
     private(set) var isAwaitingAnswer = false
     private(set) var errorMessage: String?
@@ -147,6 +148,7 @@ final class SessionManager {
         isLiveSubtitlePartial = false
         transcriptHistory = []
         activeQuestion = nil
+        activeQuestionImages = []
         activeAnswer = nil
         partialMessageIDs.removeAll()
         lastFinalTranscriptAt.removeAll()
@@ -293,19 +295,42 @@ final class SessionManager {
     func dismissActiveAnswer() {
         activeAnswer = nil
         activeQuestion = nil
+        activeQuestionImages = []
     }
 
-    func askQuestion(_ text: String) async {
+    func askQuestion(_ text: String, images: [ChatImageAttachment] = []) async {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, isMeetingActive else { return }
+        guard !trimmed.isEmpty || !images.isEmpty, isMeetingActive else { return }
+
+        let question = trimmed.isEmpty
+            ? (images.count > 1
+                ? "What can you tell me about these images?"
+                : "What can you tell me about this image?")
+            : trimmed
 
         chatMessages.append(
-            ChatMessage(kind: .userQuestion, sender: .user, text: trimmed)
+            ChatMessage(
+                kind: .userQuestion,
+                sender: .user,
+                text: question,
+                imageAttachments: images
+            )
         )
-        activeQuestion = trimmed
+        activeQuestion = question
+        activeQuestionImages = images
         activeAnswer = nil
 
-        guard aiService.isAvailable else {
+        if !images.isEmpty, !GeminiRESTClient.isAvailable {
+            let message = "Add your Gemini API key in Settings to ask about images."
+            errorMessage = message
+            activeAnswer = message
+            chatMessages.append(
+                ChatMessage(kind: .assistantAnswer, sender: .assistant, text: message)
+            )
+            return
+        }
+
+        guard aiService.isAvailable || !images.isEmpty else {
             let message = aiService.availabilityMessage
                 ?? "Configure \(aiService.provider.label) in Settings before asking questions."
             errorMessage = message
@@ -321,7 +346,11 @@ final class SessionManager {
 
         do {
             let transcript = transcriptContext()
-            let answer = try await aiService.answerQuestion(transcript: transcript, question: trimmed)
+            let answer = try await aiService.answerQuestion(
+                transcript: transcript,
+                question: question,
+                images: images
+            )
             activeAnswer = answer
             chatMessages.append(
                 ChatMessage(kind: .assistantAnswer, sender: .assistant, text: answer)

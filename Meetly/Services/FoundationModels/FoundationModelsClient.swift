@@ -20,8 +20,10 @@ enum AIError: LocalizedError {
 
 @MainActor
 struct FoundationModelsClient {
-    private static let meetingAssistantInstructions =
-        "You are a meeting assistant. Answer questions based on the meeting transcript."
+    private static let meetingAssistantInstructions = """
+    You are a meeting assistant. Answer questions based on the meeting transcript. \
+    Always respond in plain text. Never use markdown or other text formatting.
+    """
 
     /// Permissive guardrails for summarizing user-provided meeting transcripts.
     private static let meetingModel = SystemLanguageModel(
@@ -169,7 +171,8 @@ struct FoundationModelsClient {
             \(question)
 
             Tell the user you're still listening and no speech has been transcribed yet. \
-            Suggest they speak clearly into the microphone and wait a few seconds before asking again.
+            Suggest they speak clearly into the microphone and wait a few seconds before asking again. \
+            Respond in plain text only — no markdown, bullet lists, headers, or other formatting.
             """
         }
 
@@ -180,7 +183,8 @@ struct FoundationModelsClient {
         User question:
         \(question)
 
-        Answer the question using only the transcript context. Be concise.
+        Answer the question using only the transcript context. Be concise. \
+        Respond in plain text only — no markdown, bullet lists, headers, or other formatting.
         """
     }
 }

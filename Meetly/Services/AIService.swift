@@ -27,12 +27,16 @@ final class AIService {
         }
     }
 
-    func answerQuestion(transcript: String, question: String) async throws -> String {
-        switch provider {
-        case .appleIntelligence:
-            try await foundationClient.answerQuestion(transcript: transcript, question: question)
-        case .gemini:
-            try await geminiClient.answerQuestion(transcript: transcript, question: question)
+    func answerQuestion(transcript: String, question: String, images: [ChatImageAttachment] = []) async throws -> String {
+        if !images.isEmpty {
+            try await geminiClient.answerQuestion(transcript: transcript, question: question, images: images)
+        } else {
+            switch provider {
+            case .appleIntelligence:
+                try await foundationClient.answerQuestion(transcript: transcript, question: question)
+            case .gemini:
+                try await geminiClient.answerQuestion(transcript: transcript, question: question)
+            }
         }
     }
 

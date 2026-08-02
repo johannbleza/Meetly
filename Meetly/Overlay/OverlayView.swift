@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 private struct OverlayPreferredSizeKey: PreferenceKey {
@@ -11,36 +12,72 @@ private struct OverlayPreferredSizeKey: PreferenceKey {
     }
 }
 
+private struct OverlayContentHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+private extension View {
+    func reportPreferredSize(maxHeight: CGFloat) -> some View {
+        background {
+            GeometryReader { proxy in
+                Color.clear.preference(key: OverlayPreferredSizeKey.self, value: proxy.size)
+            }
+        }
+        .onPreferenceChange(OverlayPreferredSizeKey.self) { size in
+            OverlayPanelController.shared.updatePreferredSize(size, maxHeight: maxHeight)
+        }
+    }
+}
+
 struct OverlayView: View {
     @Bindable var sessionManager: SessionManager
     @State private var questionText = ""
+    @State private var pendingImages: [ChatImageAttachment] = []
     @State private var isShowingSettings = false
     @State private var isFollowingLive = true
     @State private var scrollDistanceFromBottom: CGFloat = 0
+    @State private var measuredAnswerHeight: CGFloat = 0
 
     private static let liveSubtitleID = "live-subtitle"
+    private static let activeAnswerID = "active-answer"
     private static let scrollBottomThreshold: CGFloat = 20
 
-    private var isExpanded: Bool {
+    private var hasQuestionContext: Bool {
         sessionManager.activeAnswer != nil
             || sessionManager.isAwaitingAnswer
             || sessionManager.activeQuestion != nil
     }
 
+    /// Listening / thinking stay compact; answers grow from that baseline.
+    private var scrollAreaHeight: CGFloat {
+        guard sessionManager.activeAnswer != nil else {
+            return OverlayGlassStyle.contentMaxHeightListening
+        }
+        return OverlayGlassStyle.answerContentHeight(measured: measuredAnswerHeight)
+    }
+
+    private var expandedMaxHeight: CGFloat {
+        pendingImages.isEmpty
+            ? OverlayGlassStyle.panelMaxHeight
+            : OverlayGlassStyle.panelMaxHeightWithPendingImage
+    }
+
+    private var isFolded: Bool {
+        sessionManager.overlayPresentation == .folded
+    }
+
     var body: some View {
         Group {
-            switch sessionManager.overlayPresentation {
-            case .folded:
-                OverlayFoldedBar(sessionManager: sessionManager)
-            case .expanded, .hidden:
-                if sessionManager.isMeetingActive {
-                    expandedOverlay
-                } else {
-                    idleOverlay
-                }
+            if sessionManager.isMeetingActive {
+                meetingOverlay
+            } else {
+                idleOverlay
             }
         }
-        .animation(.easeInOut(duration: 0.2), value: sessionManager.overlayPresentation)
     }
 
     private var idleOverlay: some View {
@@ -52,14 +89,7 @@ struct OverlayView: View {
         .frame(width: OverlayGlassStyle.panelWidth)
         .overlayGlassPanel()
         .shadow(color: .black.opacity(0.12), radius: 16, y: 6)
-        .background {
-            GeometryReader { proxy in
-                Color.clear.preference(key: OverlayPreferredSizeKey.self, value: proxy.size)
-            }
-        }
-        .onPreferenceChange(OverlayPreferredSizeKey.self) { size in
-            OverlayPanelController.shared.updatePreferredSize(size)
-        }
+        .reportPreferredSize(maxHeight: OverlayGlassStyle.panelIdleMinHeight)
     }
 
     private var idleToolbar: some View {
@@ -116,84 +146,87 @@ struct OverlayView: View {
         .frame(maxWidth: .infinity, alignment: .top)
     }
 
-    private var expandedOverlay: some View {
+    private var meetingOverlay: some View {
         VStack(spacing: 0) {
-            toolbar
-            Divider().opacity(0.25)
-            if let question = sessionManager.activeQuestion {
-                questionBanner(question)
+            OverlayMeetingToolbar(
+                sessionManager: sessionManager,
+                isShowingSettings: $isShowingSettings,
+                isFolded: isFolded
+            )
+
+            VStack(spacing: 0) {
+                Divider().opacity(0.25)
+                if let question = sessionManager.activeQuestion {
+                    questionBanner(question)
+                    Divider().opacity(0.15)
+                }
+                contentArea
                 Divider().opacity(0.15)
+                actionRow
+                OverlayInputBar(
+                    text: $questionText,
+                    pendingImages: $pendingImages,
+                    isDisabled: sessionManager.isAwaitingAnswer || !sessionManager.isMeetingActive
+                ) { question, images in
+                    Task { await sessionManager.askQuestion(question, images: images) }
+                }
+                .layoutPriority(1)
             }
-            contentArea
-            Divider().opacity(0.15)
-            actionRow
-            OverlayInputBar(
-                text: $questionText,
-                isDisabled: sessionManager.isAwaitingAnswer || !sessionManager.isMeetingActive
-            ) { question in
-                Task { await sessionManager.askQuestion(question) }
-            }
+            .opacity(isFolded ? 0 : 1)
+            .frame(maxHeight: isFolded ? 0 : nil, alignment: .top)
+            .clipped()
+            .allowsHitTesting(!isFolded)
         }
-        .frame(width: OverlayGlassStyle.panelWidth)
-        .frame(
-            minHeight: OverlayGlassStyle.panelMinHeight,
-            maxHeight: OverlayGlassStyle.panelMaxHeight,
-            alignment: .top
-        )
+        .frame(width: OverlayGlassStyle.panelWidth, alignment: .top)
+        // Measure content height before filling the panel, so fold/expand sizing stays accurate.
+        .reportPreferredSize(maxHeight: expandedMaxHeight)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .overlayGlassPanel()
         .shadow(color: .black.opacity(0.12), radius: 16, y: 6)
-        .background {
-            GeometryReader { proxy in
-                Color.clear.preference(key: OverlayPreferredSizeKey.self, value: proxy.size)
-            }
-        }
-        .onPreferenceChange(OverlayPreferredSizeKey.self) { size in
-            OverlayPanelController.shared.updatePreferredSize(size)
-        }
-        .animation(.easeInOut(duration: 0.2), value: isExpanded)
-    }
-
-    private var toolbar: some View {
-        HStack(spacing: 10) {
-            HStack(spacing: 4) {
-                OverlayToolbarIconButton(systemImage: "eye.slash", help: "Hide overlay") {
-                    sessionManager.hideOverlay()
-                }
-                OverlayToolbarIconButton(systemImage: "rectangle.compress.vertical", help: "Fold overlay") {
-                    sessionManager.foldOverlay()
+        .onAppear {
+            OverlayPanelController.shared.setPreferredMaxHeight(expandedMaxHeight)
+            OverlayPanelController.shared.setImagePasteHandler { [sessionManager] in
+                guard !sessionManager.isAwaitingAnswer, sessionManager.isMeetingActive else { return }
+                let attachments = ClipboardImageReader.readImages()
+                guard !attachments.isEmpty else { return }
+                withAnimation(OverlayGlassStyle.resizeAnimation) {
+                    pendingImages.append(contentsOf: attachments)
                 }
             }
-
-            OverlayToolbarDivider()
-
-            OverlayStatusIndicator(sessionManager: sessionManager, showsLabel: true)
-
-            Spacer(minLength: 0)
-
-            OverlayToolbarDivider()
-
-            HStack(spacing: 4) {
-                OverlayPauseResumeButton(sessionManager: sessionManager)
-                OverlayToolbarIconButton(systemImage: "stop.fill", help: "Stop meeting", tint: .red) {
-                    Task { await sessionManager.stopMeeting() }
-                }
-                OverlaySettingsButton(sessionManager: sessionManager, isShowingSettings: $isShowingSettings)
+        }
+        .onChange(of: pendingImages.count) { _, _ in
+            OverlayPanelController.shared.setPreferredMaxHeight(expandedMaxHeight)
+        }
+        .onChange(of: sessionManager.activeAnswer) { _, answer in
+            if answer == nil {
+                measuredAnswerHeight = 0
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .animation(OverlayGlassStyle.resizeAnimation, value: isFolded)
+        .animation(OverlayGlassStyle.resizeAnimation, value: hasQuestionContext)
+        .animation(OverlayGlassStyle.resizeAnimation, value: scrollAreaHeight)
+        .animation(OverlayGlassStyle.resizeAnimation, value: pendingImages.map(\.id))
     }
 
     private func questionBanner(_ question: String) -> some View {
-        HStack {
+        HStack(alignment: .top, spacing: 10) {
+            if !sessionManager.activeQuestionImages.isEmpty {
+                HStack(spacing: 6) {
+                    ForEach(sessionManager.activeQuestionImages) { image in
+                        ChatImageAttachmentPreview(attachment: image, style: .banner)
+                    }
+                }
+            }
+
             Text(question)
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                .lineLimit(2)
+                .lineLimit(3)
                 .multilineTextAlignment(.leading)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
                 .background(.quaternary.opacity(0.5), in: Capsule())
+
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 14)
@@ -249,6 +282,16 @@ struct OverlayView: View {
                         .controlSize(.small)
                         .help("Dismiss answer")
                     }
+                    .id(Self.activeAnswerID)
+                    .background {
+                        // Size from the answer alone so live captions don't jitter the panel.
+                        GeometryReader { proxy in
+                            Color.clear.preference(
+                                key: OverlayContentHeightKey.self,
+                                value: proxy.size.height + 24 // content vertical padding
+                            )
+                        }
+                    }
                 }
 
                 if !sessionManager.liveSubtitle.isEmpty, sessionManager.liveSubtitle != "…" {
@@ -303,6 +346,9 @@ struct OverlayView: View {
             ScrollView {
                 contentStack(liveSubtitleID: Self.liveSubtitleID)
             }
+            .onPreferenceChange(OverlayContentHeightKey.self) { height in
+                updateMeasuredAnswerHeight(height)
+            }
             .onScrollGeometryChange(for: CGFloat.self) { geometry in
                 geometry.contentSize.height
                     - geometry.contentOffset.y
@@ -323,14 +369,23 @@ struct OverlayView: View {
             .onChange(of: finalizedTranscriptMessages.count) { _, _ in
                 scrollToLiveIfFollowing(proxy: proxy)
             }
-            .onChange(of: sessionManager.activeAnswer) { _, _ in
-                scrollToLiveIfFollowing(proxy: proxy)
+            .onChange(of: sessionManager.activeAnswer) { _, answer in
+                if answer != nil {
+                    scrollToAnswer(proxy: proxy)
+                } else {
+                    resumeFollowingLive(proxy: proxy)
+                }
+            }
+            .onChange(of: measuredAnswerHeight) { _, height in
+                // Re-anchor after the panel grows so the answer stays in view.
+                guard height > 0, sessionManager.activeAnswer != nil else { return }
+                scrollToAnswer(proxy: proxy)
             }
             .overlay(alignment: .bottomTrailing) {
-                if !isFollowingLive {
+                if !isFollowingLive, sessionManager.activeAnswer == nil {
                     Button {
                         isFollowingLive = true
-                        withAnimation(.easeOut(duration: 0.2)) {
+                        withAnimation(OverlayGlassStyle.resizeAnimation) {
                             proxy.scrollTo(Self.liveSubtitleID, anchor: .bottom)
                         }
                     } label: {
@@ -343,16 +398,41 @@ struct OverlayView: View {
                 }
             }
         }
-        .frame(
-            minHeight: isExpanded ? 120 : 100,
-            maxHeight: isExpanded ? nil : OverlayGlassStyle.contentMaxHeightCompact
-        )
-        .frame(maxHeight: .infinity, alignment: .top)
+        .frame(height: scrollAreaHeight)
+        .layoutPriority(0)
+    }
+
+    private func updateMeasuredAnswerHeight(_ height: CGFloat) {
+        guard sessionManager.activeAnswer != nil,
+              height.isFinite,
+              height > 0,
+              abs(height - measuredAnswerHeight) > OverlayGlassStyle.resizeThreshold
+        else { return }
+        measuredAnswerHeight = height
+    }
+
+    private func scrollToAnswer(proxy: ScrollViewProxy) {
+        // Wait a beat for the answer view to join the scroll hierarchy.
+        DispatchQueue.main.async {
+            withAnimation(OverlayGlassStyle.resizeAnimation) {
+                proxy.scrollTo(Self.activeAnswerID, anchor: .top)
+            }
+        }
+    }
+
+    private func resumeFollowingLive(proxy: ScrollViewProxy) {
+        isFollowingLive = true
+        // Wait for transcript / live subtitle to re-enter the hierarchy after dismiss.
+        DispatchQueue.main.async {
+            withAnimation(OverlayGlassStyle.resizeAnimation) {
+                proxy.scrollTo(Self.liveSubtitleID, anchor: .bottom)
+            }
+        }
     }
 
     private func scrollToLiveIfFollowing(proxy: ScrollViewProxy) {
-        guard isFollowingLive else { return }
-        withAnimation(.easeOut(duration: 0.2)) {
+        guard isFollowingLive, sessionManager.activeAnswer == nil else { return }
+        withAnimation(OverlayGlassStyle.resizeAnimation) {
             proxy.scrollTo(Self.liveSubtitleID, anchor: .bottom)
         }
     }

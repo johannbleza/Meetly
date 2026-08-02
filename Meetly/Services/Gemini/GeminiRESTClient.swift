@@ -23,6 +23,54 @@ struct GeminiRESTClient {
         )
     }
 
+    func answerQuestion(transcript: String, question: String, images: [ChatImageAttachment]) async throws -> String {
+        let context = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        let imageLabel = images.count > 1 ? "Images are attached" : "An image is attached"
+        let imageInstruction = images.count > 1
+            ? "Use the attached images to answer the user's question."
+            : "Use the image to answer the user's question."
+        let prompt: String
+        if context.isEmpty {
+            prompt = """
+            No meeting transcript has been captured yet.
+
+            \(imageLabel). \(imageInstruction)
+
+            User question:
+            \(question)
+
+            If the question depends on meeting context, tell the user you're still listening and no speech has been transcribed yet. \
+            Otherwise answer based on the \(images.count > 1 ? "images" : "image") alone. \
+            Respond in plain text only — no markdown, bullet lists, headers, or other formatting.
+            """
+        } else {
+            prompt = """
+            Meeting transcript:
+            \(context)
+
+            \(imageLabel). Use both the meeting transcript and the \(images.count > 1 ? "images" : "image") to answer the user's question.
+
+            User question:
+            \(question)
+
+            Be concise. Respond in plain text only — no markdown, bullet lists, headers, or other formatting.
+            """
+        }
+
+        var parts: [Part] = [Part(text: prompt)]
+        for image in images {
+            parts.append(Part(imageData: image.data, mimeType: image.mimeType))
+        }
+
+        return try await generateMultimodalText(
+            parts: parts,
+            systemInstruction: """
+            You are a meeting assistant. Answer questions using meeting transcript context and any attached images. \
+            Always respond in plain text. Never use markdown or other text formatting.
+            """
+        )
+    }
+
     func answerQuestion(transcript: String, question: String) async throws -> String {
         let context = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         let prompt: String
@@ -34,7 +82,8 @@ struct GeminiRESTClient {
             \(question)
 
             Tell the user you're still listening and no speech has been transcribed yet. \
-            Suggest they speak clearly into the microphone and wait a few seconds before asking again.
+            Suggest they speak clearly into the microphone and wait a few seconds before asking again. \
+            Respond in plain text only — no markdown, bullet lists, headers, or other formatting.
             """
         } else {
             prompt = """
@@ -44,12 +93,16 @@ struct GeminiRESTClient {
             User question:
             \(question)
 
-            Answer the question using only the transcript context. Be concise.
+            Answer the question using only the transcript context. Be concise. \
+            Respond in plain text only — no markdown, bullet lists, headers, or other formatting.
             """
         }
         return try await generateText(
             prompt: prompt,
-            systemInstruction: "You are a meeting assistant. Answer questions based on the meeting transcript."
+            systemInstruction: """
+            You are a meeting assistant. Answer questions based on the meeting transcript. \
+            Always respond in plain text. Never use markdown or other text formatting.
+            """
         )
     }
 
@@ -84,6 +137,20 @@ struct GeminiRESTClient {
         let data = Data(json.utf8)
         let output = try JSONDecoder().decode(ActionItemsOutput.self, from: data)
         return output.actionItems
+    }
+
+    private func generateMultimodalText(parts: [Part], systemInstruction: String) async throws -> String {
+        let url = try GeminiConfig.generateContentURL(model: GeminiConfig.textModel)
+        let body = GenerateContentRequest(
+            systemInstruction: SystemInstruction(parts: [Part(text: systemInstruction)]),
+            contents: [Content(role: "user", parts: parts)]
+        )
+
+        let response: GenerateContentResponse = try await post(url: url, body: body)
+        guard let text = response.candidates?.first?.content?.parts.first?.text else {
+            throw GeminiError.invalidResponse
+        }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func generateText(prompt: String, systemInstruction: String) async throws -> String {
@@ -155,9 +222,21 @@ private struct Content: Encodable {
 
 private struct Part: Encodable {
     var text: String?
+    var inlineData: InlineData?
 
     init(text: String) {
         self.text = text
+        self.inlineData = nil
+    }
+
+    init(imageData: Data, mimeType: String) {
+        self.text = nil
+        self.inlineData = InlineData(mimeType: mimeType, data: imageData.base64EncodedString())
+    }
+
+    struct InlineData: Encodable {
+        var mimeType: String
+        var data: String
     }
 }
 

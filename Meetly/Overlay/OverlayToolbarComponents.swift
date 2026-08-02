@@ -26,11 +26,58 @@ struct OverlayToolbarIconButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: systemImage)
+                .font(.system(size: 13, weight: .medium))
+                .frame(width: 22, height: 22)
+                .contentShape(Rectangle())
         }
-        .controlSize(.small)
         .buttonStyle(.borderless)
         .foregroundStyle(tint)
         .help(help)
+    }
+}
+
+/// Shared chrome for folded + expanded meeting overlays so icons stay anchored.
+struct OverlayMeetingToolbar: View {
+    @Bindable var sessionManager: SessionManager
+    @Binding var isShowingSettings: Bool
+    var isFolded: Bool
+
+    var body: some View {
+        HStack(spacing: 10) {
+            HStack(spacing: 2) {
+                OverlayToolbarIconButton(systemImage: "eye.slash", help: "Hide overlay") {
+                    sessionManager.hideOverlay()
+                }
+                OverlayToolbarIconButton(
+                    systemImage: isFolded ? "rectangle.expand.vertical" : "rectangle.compress.vertical",
+                    help: isFolded ? "Expand overlay" : "Fold overlay"
+                ) {
+                    if isFolded {
+                        sessionManager.expandOverlay()
+                    } else {
+                        sessionManager.foldOverlay()
+                    }
+                }
+            }
+
+            OverlayToolbarDivider()
+
+            OverlayStatusIndicator(sessionManager: sessionManager, showsLabel: true)
+
+            Spacer(minLength: 0)
+
+            OverlayToolbarDivider()
+
+            HStack(spacing: 2) {
+                OverlayPauseResumeButton(sessionManager: sessionManager)
+                OverlayToolbarIconButton(systemImage: "stop.fill", help: "Stop meeting", tint: .red) {
+                    Task { await sessionManager.stopMeeting() }
+                }
+                OverlaySettingsButton(sessionManager: sessionManager, isShowingSettings: $isShowingSettings)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
     }
 }
 
