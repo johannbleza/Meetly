@@ -1,35 +1,11 @@
 import AppKit
 import SwiftUI
 
-private struct OverlayPreferredSizeKey: PreferenceKey {
-    static var defaultValue: CGSize = .zero
-
-    static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
-        let next = nextValue()
-        if next.height > 0 {
-            value = next
-        }
-    }
-}
-
 private struct OverlayContentHeightKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
 
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = max(value, nextValue())
-    }
-}
-
-private extension View {
-    func reportPreferredSize(maxHeight: CGFloat) -> some View {
-        background {
-            GeometryReader { proxy in
-                Color.clear.preference(key: OverlayPreferredSizeKey.self, value: proxy.size)
-            }
-        }
-        .onPreferenceChange(OverlayPreferredSizeKey.self) { size in
-            OverlayPanelController.shared.updatePreferredSize(size, maxHeight: maxHeight)
-        }
     }
 }
 
@@ -60,12 +36,6 @@ struct OverlayView: View {
         return OverlayGlassStyle.answerContentHeight(measured: measuredAnswerHeight)
     }
 
-    private var expandedMaxHeight: CGFloat {
-        pendingImages.isEmpty
-            ? OverlayGlassStyle.panelMaxHeight
-            : OverlayGlassStyle.panelMaxHeightWithPendingImage
-    }
-
     private var isFolded: Bool {
         sessionManager.overlayPresentation == .folded
     }
@@ -87,9 +57,12 @@ struct OverlayView: View {
             idleContent
         }
         .frame(width: OverlayGlassStyle.panelWidth)
+        // Same layout contract as the meeting overlay: ideal height, glass
+        // hugging the content, pinned to the window's top edge.
+        .fixedSize(horizontal: false, vertical: true)
         .overlayGlassPanel()
         .shadow(color: .black.opacity(0.12), radius: 16, y: 6)
-        .reportPreferredSize(maxHeight: OverlayGlassStyle.panelIdleMinHeight)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
     private var idleToolbar: some View {
@@ -179,12 +152,13 @@ struct OverlayView: View {
             .allowsHitTesting(!isFolded)
         }
         .frame(width: OverlayGlassStyle.panelWidth, alignment: .top)
-        .reportPreferredSize(maxHeight: expandedMaxHeight)
+        // Keep the panel at its ideal height (never stretched by the window)...
+        .fixedSize(horizontal: false, vertical: true)
         .overlayGlassPanel()
         .shadow(color: .black.opacity(0.12), radius: 16, y: 6)
+        // ...and pinned to the window's top edge so fold shrinks upward.
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .onAppear {
-            OverlayPanelController.shared.setPreferredMaxHeight(expandedMaxHeight)
             OverlayPanelController.shared.setImagePasteHandler { [sessionManager] in
                 guard !sessionManager.isAwaitingAnswer, sessionManager.isMeetingActive else { return }
                 let attachments = ClipboardImageReader.readImages()
@@ -193,9 +167,6 @@ struct OverlayView: View {
                     pendingImages.append(contentsOf: attachments)
                 }
             }
-        }
-        .onChange(of: pendingImages.count) { _, _ in
-            OverlayPanelController.shared.setPreferredMaxHeight(expandedMaxHeight)
         }
         .onChange(of: sessionManager.activeAnswer) { _, answer in
             if answer == nil {
