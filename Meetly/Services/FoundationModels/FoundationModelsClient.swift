@@ -78,6 +78,26 @@ struct FoundationModelsClient {
         return try await generateSummary(from: trimmed, allowRetry: true)
     }
 
+    func generateActionItems(from context: String) async throws -> [String] {
+        try ensureAvailable()
+        let trimmed = TranscriptTrimmer.trimToCharacterLimit(context)
+        let prompt = """
+        Extract concrete action items and follow-up tasks from this meeting content. \
+        Return JSON with key actionItems (array of strings). Each item should be a clear, actionable task.
+
+        Meeting content:
+        \(trimmed)
+        """
+        let session = makeSession(
+            instructions: "You are a meeting assistant. Extract actionable follow-up tasks."
+        )
+        let response = try await session.respond(to: prompt)
+        let json = Self.extractJSON(from: response.content)
+        let data = Data(json.utf8)
+        let output = try JSONDecoder().decode(ActionItemsOutput.self, from: data)
+        return output.actionItems
+    }
+
     private func generateSummary(from transcript: String, allowRetry: Bool) async throws -> SummaryOutput {
         let prompt = """
         Summarize this meeting transcript. Return JSON with keys:

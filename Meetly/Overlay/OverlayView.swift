@@ -28,6 +28,18 @@ struct OverlayView: View {
     }
 
     var body: some View {
+        Group {
+            switch sessionManager.overlayPresentation {
+            case .folded:
+                OverlayFoldedBar(sessionManager: sessionManager)
+            case .expanded, .hidden:
+                expandedOverlay
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: sessionManager.overlayPresentation)
+    }
+
+    private var expandedOverlay: some View {
         VStack(spacing: 0) {
             toolbar
             Divider().opacity(0.25)
@@ -40,7 +52,7 @@ struct OverlayView: View {
             actionRow
             OverlayInputBar(
                 text: $questionText,
-                isDisabled: sessionManager.isAwaitingAnswer || sessionManager.state != .recording
+                isDisabled: sessionManager.isAwaitingAnswer || !sessionManager.isMeetingActive
             ) { question in
                 Task { await sessionManager.askQuestion(question) }
             }
@@ -65,49 +77,31 @@ struct OverlayView: View {
     }
 
     private var toolbar: some View {
-        HStack(spacing: 8) {
-            Button("Hide", systemImage: "chevron.down") {
-                sessionManager.toggleOverlay()
-            }
-            .controlSize(.small)
-            .buttonStyle(.borderless)
-
-            Spacer()
-
-            HStack(spacing: 5) {
-                Circle()
-                    .fill(sessionManager.state == .recording ? .red : .secondary)
-                    .frame(width: 6, height: 6)
-                if let startedAt = sessionManager.sessionStartedAt {
-                    TimelineView(.periodic(from: .now, by: 1)) { _ in
-                        Text(elapsed(since: startedAt))
-                            .font(.caption.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                    }
+        HStack(spacing: 10) {
+            HStack(spacing: 4) {
+                OverlayToolbarIconButton(systemImage: "eye.slash", help: "Hide overlay") {
+                    sessionManager.hideOverlay()
+                }
+                OverlayToolbarIconButton(systemImage: "rectangle.compress.vertical", help: "Fold overlay") {
+                    sessionManager.foldOverlay()
                 }
             }
 
-            Spacer()
+            OverlayToolbarDivider()
 
-            Button {
-                isShowingSettings.toggle()
-            } label: {
-                Image(systemName: "gearshape")
-            }
-            .controlSize(.small)
-            .buttonStyle(.borderless)
-            .help("Settings")
-            .popover(isPresented: $isShowingSettings, arrowEdge: .bottom) {
-                OverlaySettingsView(sessionManager: sessionManager)
-            }
+            OverlayStatusIndicator(sessionManager: sessionManager, showsLabel: true)
 
-            Button("Stop", systemImage: "stop.fill") {
-                Task { await sessionManager.stopMeeting() }
+            Spacer(minLength: 0)
+
+            OverlayToolbarDivider()
+
+            HStack(spacing: 4) {
+                OverlayPauseResumeButton(sessionManager: sessionManager)
+                OverlayToolbarIconButton(systemImage: "stop.fill", help: "Stop meeting", tint: .red) {
+                    Task { await sessionManager.stopMeeting() }
+                }
+                OverlaySettingsButton(sessionManager: sessionManager, isShowingSettings: $isShowingSettings)
             }
-            .controlSize(.small)
-            .buttonStyle(.borderless)
-            .foregroundStyle(.red)
-            .help("Stop meeting")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -207,6 +201,11 @@ struct OverlayView: View {
                                 .foregroundStyle(.secondary)
                         }
                         .id(liveSubtitleID)
+                    } else if sessionManager.state == .paused {
+                        Text("Paused")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .id(liveSubtitleID)
                     } else {
                         Text("Listening…")
                             .font(.subheadline)
@@ -310,14 +309,7 @@ struct OverlayView: View {
         }
         .controlSize(.small)
         .buttonStyle(.borderless)
-        .disabled(sessionManager.isAwaitingAnswer || sessionManager.state != .recording)
-    }
-
-    private func elapsed(since date: Date) -> String {
-        let seconds = Int(Date().timeIntervalSince(date))
-        let minutes = seconds / 60
-        let remainder = seconds % 60
-        return String(format: "%02d:%02d", minutes, remainder)
+        .disabled(sessionManager.isAwaitingAnswer || !sessionManager.isMeetingActive)
     }
 }
 

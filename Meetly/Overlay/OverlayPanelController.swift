@@ -13,6 +13,7 @@ final class OverlayPanelController {
     private var panel: KeyablePanel?
     private weak var sessionManager: SessionManager?
     private var lastAppliedHeight: CGFloat = OverlayGlassStyle.panelMinHeight
+    private var presentation: OverlayPresentation = .hidden
 
     private init() {}
 
@@ -24,6 +25,7 @@ final class OverlayPanelController {
     func show() {
         rebuildPanelIfNeeded()
         if let panel {
+            presentation = .expanded
             ScreenShareExclusion.apply(to: panel)
             panel.orderFrontRegardless()
         }
@@ -41,12 +43,35 @@ final class OverlayPanelController {
     }
 
     func updatePreferredSize(_ size: CGSize) {
+        guard let panel, presentation == .expanded else { return }
+        applyHeight(
+            min(
+                max(size.height, OverlayGlassStyle.panelMinHeight),
+                OverlayGlassStyle.panelMaxHeight
+            ),
+            to: panel
+        )
+    }
+
+    func updateForPresentation(_ presentation: OverlayPresentation) {
+        self.presentation = presentation
         guard let panel else { return }
 
-        let clampedHeight = min(
-            max(size.height, OverlayGlassStyle.panelMinHeight),
-            OverlayGlassStyle.panelMaxHeight
-        )
+        switch presentation {
+        case .hidden:
+            break
+        case .folded:
+            applyHeight(OverlayGlassStyle.panelFoldedHeight, to: panel)
+        case .expanded:
+            applyHeight(
+                max(lastAppliedHeight, OverlayGlassStyle.panelMinHeight),
+                to: panel
+            )
+        }
+    }
+
+    private func applyHeight(_ height: CGFloat, to panel: NSPanel) {
+        let clampedHeight = height
 
         guard abs(clampedHeight - lastAppliedHeight) > 0.5 else { return }
         lastAppliedHeight = clampedHeight

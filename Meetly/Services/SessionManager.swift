@@ -6,7 +6,14 @@ import SwiftData
 enum MeetingState: Equatable {
     case idle
     case recording
+    case paused
     case summarizing
+}
+
+enum OverlayPresentation: Equatable {
+    case hidden
+    case folded
+    case expanded
 }
 
 @MainActor
@@ -27,7 +34,7 @@ final class SessionManager {
     private(set) var needsSystemAudioPicker = false
     private(set) var isSystemAudioEnabled = false
     private(set) var sessionStartedAt: Date?
-    private(set) var isOverlayVisible = false
+    private(set) var overlayPresentation: OverlayPresentation = .hidden
     private(set) var aiProviderSelection: AIProvider = AppSettings.aiProvider
     private(set) var lastCompletedSessionID: UUID?
     var requestedHomePanel: HomePanel?
@@ -39,8 +46,27 @@ final class SessionManager {
     private var modelContext: ModelContext?
     private var partialMessageIDs: [Speaker: UUID] = [:]
     private var lastFinalTranscriptAt: [Speaker: Date] = [:]
+    private var pausedAt: Date?
+    private var accumulatedPausedDuration: TimeInterval = 0
 
     private let transcriptMergePauseThreshold: TimeInterval = 3
+
+    var isMeetingActive: Bool {
+        state == .recording || state == .paused
+    }
+
+    var isOverlayVisible: Bool {
+        overlayPresentation != .hidden
+    }
+
+    var sessionElapsedTime: TimeInterval {
+        guard let sessionStartedAt else { return 0 }
+        var elapsed = Date().timeIntervalSince(sessionStartedAt) - accumulatedPausedDuration
+        if let pausedAt {
+            elapsed -= Date().timeIntervalSince(pausedAt)
+        }
+        return max(0, elapsed)
+    }
 
     var isAIAvailable: Bool {
         aiService.isAvailable
@@ -69,12 +95,34 @@ final class SessionManager {
     }
 
     func toggleOverlay() {
-        isOverlayVisible.toggle()
-        if isOverlayVisible {
-            OverlayPanelController.shared.show()
+        if overlayPresentation == .hidden {
+            showOverlay()
         } else {
-            OverlayPanelController.shared.hide()
+            hideOverlay()
         }
+    }
+
+    func showOverlay() {
+        overlayPresentation = .expanded
+        OverlayPanelController.shared.show()
+        OverlayPanelController.shared.updateForPresentation(.expanded)
+    }
+
+    func hideOverlay() {
+        overlayPresentation = .hidden
+        OverlayPanelController.shared.hide()
+    }
+
+    func foldOverlay() {
+        guard isMeetingActive else { return }
+        overlayPresentation = .folded
+        OverlayPanelController.shared.updateForPresentation(.folded)
+    }
+
+    func expandOverlay() {
+        guard isMeetingActive else { return }
+        overlayPresentation = .expanded
+        OverlayPanelController.shared.updateForPresentation(.expanded)
     }
 
     func startMeeting() async {
@@ -93,6 +141,8 @@ final class SessionManager {
         activeAnswer = nil
         partialMessageIDs.removeAll()
         lastFinalTranscriptAt.removeAll()
+        pausedAt = nil
+        accumulatedPausedDuration = 0
 
         guard aiService.isAvailable else {
             errorMessage = aiService.availabilityMessage
@@ -118,9 +168,10 @@ final class SessionManager {
         currentSession = session
         sessionStartedAt = session.startedAt
         state = .recording
-        isOverlayVisible = true
+        overlayPresentation = .expanded
         MainWindowController.shared.hideMainWindow()
         OverlayPanelController.shared.show()
+        OverlayPanelController.shared.updateForPresentation(.expanded)
 
         do {
             try await transcriptionService.prepare()
@@ -160,7 +211,7 @@ final class SessionManager {
     }
 
     func enableSystemAudio() async {
-        guard state == .recording else { return }
+        guard isMeetingActive, state == .recording else { return }
 
         if let warning = await audioCaptureService.enableSystemAudioViaPicker() {
             warningMessage = warning
@@ -173,11 +224,41 @@ final class SessionManager {
         }
     }
 
+    func pauseMeeting() async {
+        guard state == .recording else { return }
+
+        await audioCaptureService.pause()
+        await transcriptionService.pause()
+        finalizePartialMessages()
+        clearLiveSubtitle()
+        pausedAt = Date()
+        state = .paused
+    }
+
+    func resumeMeeting() async {
+        guard state == .paused else { return }
+        let pauseStartedAt = pausedAt
+
+        do {
+            try await transcriptionService.resume()
+            if let warning = try await audioCaptureService.resume() {
+                warningMessage = warning
+            }
+            if let pauseStartedAt {
+                accumulatedPausedDuration += Date().timeIntervalSince(pauseStartedAt)
+            }
+            pausedAt = nil
+            state = .recording
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
     func stopMeeting(saveSummary: Bool = true) async {
         await audioCaptureService.stop()
         await transcriptionService.stop()
 
-        isOverlayVisible = false
+        overlayPresentation = .hidden
         OverlayPanelController.shared.hide()
         MainWindowController.shared.showMainWindow()
 
@@ -196,6 +277,8 @@ final class SessionManager {
         state = .idle
         currentSession = nil
         sessionStartedAt = nil
+        pausedAt = nil
+        accumulatedPausedDuration = 0
     }
 
     func dismissActiveAnswer() {
@@ -205,7 +288,7 @@ final class SessionManager {
 
     func askQuestion(_ text: String) async {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, state == .recording else { return }
+        guard !trimmed.isEmpty, isMeetingActive else { return }
 
         chatMessages.append(
             ChatMessage(kind: .userQuestion, sender: .user, text: trimmed)
@@ -353,6 +436,12 @@ final class SessionManager {
         chatMessages.lastIndex(where: { $0.kind == .transcript && $0.isPartial && $0.sender == sender })
     }
 
+    private func clearLiveSubtitle() {
+        liveSubtitle = ""
+        liveSubtitleSpeaker = nil
+        isLiveSubtitlePartial = false
+    }
+
     private func finalizePartialMessages() {
         for index in chatMessages.indices where chatMessages[index].isPartial {
             chatMessages[index].isPartial = false
@@ -383,10 +472,7 @@ final class SessionManager {
     private func generateSummary(for session: MeetingSession) async {
         guard let modelContext else { return }
 
-        let transcript = session.segments
-            .sorted { $0.timestamp < $1.timestamp }
-            .map { "[\($0.speaker.label)] \($0.text)" }
-            .joined(separator: "\n")
+        let transcript = MeetingContextBuilder.transcriptText(for: session)
 
         guard !transcript.isEmpty else { return }
 
@@ -395,9 +481,14 @@ final class SessionManager {
             let summary = MeetingSummary(
                 summaryText: output.summary,
                 keyPoints: output.keyPoints,
-                actionItems: output.actionItems,
                 session: session
             )
+            summary.actionItems = output.actionItems.enumerated().map { index, text in
+                ActionItem(text: text, sortOrder: index, summary: summary)
+            }
+            for item in summary.actionItems {
+                modelContext.insert(item)
+            }
             session.title = output.title
             session.summary = summary
             modelContext.insert(summary)

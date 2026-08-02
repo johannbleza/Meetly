@@ -63,12 +63,20 @@ final class LiveTranscriptionService {
         }
     }
 
-    func stop() async {
+    func pause() async {
         await micChannel?.stop()
         await systemChannel?.stop()
         micChannel = nil
         systemChannel = nil
         isStartingSystemChannel = false
+    }
+
+    func resume() async throws {
+        try await start()
+    }
+
+    func stop() async {
+        await pause()
 
         if localeReserved, let transcriptionLocale {
             await AppleSpeechChannel.releaseLocale(transcriptionLocale)

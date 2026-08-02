@@ -6,6 +6,7 @@ struct SettingsView: View {
     @State private var aiProvider = AppSettings.aiProvider
     @State private var textModel = AppSettings.geminiTextModel
     @State private var overlayOpacity = AppSettings.overlayOpacity
+    @State private var hideFromScreenShare = AppSettings.hideFromScreenShare
     @State private var apiKeyDraft = ""
     @State private var hasStoredAPIKey = GeminiConfig.hasAPIKey
     @State private var statusMessage: String?
@@ -60,6 +61,16 @@ struct SettingsView: View {
                 .onChange(of: overlayOpacity) { _, newValue in
                     AppSettings.overlayOpacity = newValue
                 }
+
+                Toggle("Hide from screen share", isOn: $hideFromScreenShare)
+                    .onChange(of: hideFromScreenShare) { _, newValue in
+                        AppSettings.hideFromScreenShare = newValue
+                        ScreenShareExclusion.applyToAllWindows()
+                    }
+
+                Text("Keeps the overlay hidden from Zoom, Google Meet, and other screen sharing apps.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)

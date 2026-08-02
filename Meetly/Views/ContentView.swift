@@ -38,6 +38,6 @@ private struct MainWindowReader: NSViewRepresentable {
 
 #Preview {
     ContentView(sessionManager: SessionManager())
-        .modelContainer(for: [MeetingSession.self, TranscriptSegment.self, MeetingSummary.self], inMemory: true)
+        .modelContainer(for: [MeetingSession.self, TranscriptSegment.self, MeetingSummary.self, ActionItem.self], inMemory: true)
         .preferredColorScheme(.dark)
 }

@@ -69,6 +69,23 @@ struct GeminiRESTClient {
         return try JSONDecoder().decode(SummaryOutput.self, from: data)
     }
 
+    func generateActionItems(from context: String) async throws -> [String] {
+        let prompt = """
+        Extract concrete action items and follow-up tasks from this meeting content. \
+        Return JSON with key actionItems (array of strings). Each item should be a clear, actionable task.
+
+        Meeting content:
+        \(context)
+        """
+        let json = try await generateJSON(
+            prompt: prompt,
+            systemInstruction: "You are a meeting assistant. Extract actionable follow-up tasks."
+        )
+        let data = Data(json.utf8)
+        let output = try JSONDecoder().decode(ActionItemsOutput.self, from: data)
+        return output.actionItems
+    }
+
     private func generateText(prompt: String, systemInstruction: String) async throws -> String {
         let url = try GeminiConfig.generateContentURL(model: GeminiConfig.textModel)
         let body = GenerateContentRequest(

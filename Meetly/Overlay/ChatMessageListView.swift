@@ -1,40 +1,55 @@
 import SwiftUI
 
+enum ChatMessageListStyle {
+    case overlay
+    case home
+}
+
 struct ChatMessageListView: View {
     let messages: [ChatMessage]
     let isAwaitingAnswer: Bool
+    var style: ChatMessageListStyle = .overlay
+    var scrollable: Bool = true
 
     var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 10) {
-                    ForEach(messages) { message in
-                        ChatBubbleView(message: message)
-                            .id(message.id)
-                    }
-
-                    if isAwaitingAnswer {
-                        HStack(spacing: 8) {
-                            ProgressView()
-                                .controlSize(.small)
-                            Text("AI is thinking...")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        .padding(.horizontal, 4)
-                        .id("typing-indicator")
-                    }
+        if scrollable {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    messageStack
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
+                .onChange(of: messages.count) { _, _ in
+                    scrollToBottom(proxy: proxy)
+                }
+                .onChange(of: isAwaitingAnswer) { _, _ in
+                    scrollToBottom(proxy: proxy)
+                }
             }
-            .onChange(of: messages.count) { _, _ in
-                scrollToBottom(proxy: proxy)
+        } else {
+            messageStack
+        }
+    }
+
+    private var messageStack: some View {
+        LazyVStack(alignment: .leading, spacing: 10) {
+            ForEach(messages) { message in
+                ChatBubbleView(message: message, style: style)
+                    .id(message.id)
             }
-            .onChange(of: isAwaitingAnswer) { _, _ in
-                scrollToBottom(proxy: proxy)
+
+            if isAwaitingAnswer {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("AI is thinking...")
+                        .font(.appCaption)
+                        .foregroundStyle(style == .home ? AppTheme.textSecondary : .secondary)
+                }
+                .padding(.horizontal, 4)
+                .id("typing-indicator")
             }
         }
+        .padding(.horizontal, style == .home ? 0 : 12)
+        .padding(.vertical, style == .home ? 0 : 8)
     }
 
     private func scrollToBottom(proxy: ScrollViewProxy) {
@@ -52,6 +67,7 @@ struct ChatMessageListView: View {
 
 private struct ChatBubbleView: View {
     let message: ChatMessage
+    let style: ChatMessageListStyle
 
     private var isRightAligned: Bool {
         message.sender == .me || message.sender == .user
@@ -63,12 +79,12 @@ private struct ChatBubbleView: View {
 
             VStack(alignment: isRightAligned ? .trailing : .leading, spacing: 4) {
                 Text(message.sender.label)
-                    .font(.caption2.weight(.semibold))
+                    .font(.appCaption.weight(.semibold))
                     .foregroundStyle(labelColor)
 
                 Text(message.text)
-                    .font(.callout)
-                    .foregroundStyle(message.isPartial ? .secondary : .primary)
+                    .font(.appBody)
+                    .foregroundStyle(textColor)
                     .multilineTextAlignment(isRightAligned ? .trailing : .leading)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 8)
@@ -80,19 +96,42 @@ private struct ChatBubbleView: View {
         }
     }
 
+    private var textColor: Color {
+        if message.isPartial {
+            return style == .home ? AppTheme.textSecondary : .secondary
+        }
+        return style == .home ? AppTheme.textPrimary : .primary
+    }
+
     private var labelColor: Color {
-        switch message.sender {
-        case .me, .user: .blue
-        case .other: .secondary
-        case .assistant: .purple
+        switch (message.sender, style) {
+        case (.me, _), (.user, _):
+            return style == .home ? AppTheme.accent : .blue
+        case (.other, .home):
+            return AppTheme.textSecondary
+        case (.other, .overlay):
+            return .secondary
+        case (.assistant, .home):
+            return AppTheme.accent.opacity(0.85)
+        case (.assistant, .overlay):
+            return .purple
         }
     }
 
     private var bubbleColor: Color {
-        switch message.sender {
-        case .me, .user: Color.blue.opacity(0.15)
-        case .other: Color.primary.opacity(0.06)
-        case .assistant: Color.purple.opacity(0.12)
+        switch (message.sender, style) {
+        case (.me, .home), (.user, .home):
+            return AppTheme.accent.opacity(0.15)
+        case (.me, .overlay), (.user, .overlay):
+            return Color.blue.opacity(0.15)
+        case (.other, .home):
+            return AppTheme.bgInput
+        case (.other, .overlay):
+            return Color.primary.opacity(0.06)
+        case (.assistant, .home):
+            return AppTheme.bgInput.opacity(0.85)
+        case (.assistant, .overlay):
+            return Color.purple.opacity(0.12)
         }
     }
 }

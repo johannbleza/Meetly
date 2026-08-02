@@ -11,8 +11,8 @@ struct MenuBarContentView: View {
             switch sessionManager.state {
             case .idle:
                 idleMenu
-            case .recording:
-                recordingMenu
+            case .recording, .paused:
+                activeMeetingMenu
             case .summarizing:
                 summarizingMenu
             }
@@ -47,15 +47,24 @@ struct MenuBarContentView: View {
     }
 
     @ViewBuilder
-    private var recordingMenu: some View {
-        if let startedAt = sessionManager.sessionStartedAt {
-            TimelineView(.periodic(from: .now, by: 1)) { _ in
-                Text("Recording • \(elapsed(since: startedAt))")
+    private var activeMeetingMenu: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { _ in
+            Text("\(sessionManager.state == .paused ? "Paused" : "Recording") • \(MeetingTimeFormatting.elapsed(sessionManager.sessionElapsedTime))")
+        }
+        .disabled(true)
+
+        if sessionManager.state == .recording {
+            Button {
+                Task { await sessionManager.pauseMeeting() }
+            } label: {
+                Label("Pause", systemImage: "pause.fill")
             }
-            .disabled(true)
         } else {
-            Text("Recording")
-                .disabled(true)
+            Button {
+                Task { await sessionManager.resumeMeeting() }
+            } label: {
+                Label("Resume", systemImage: "play.fill")
+            }
         }
 
         Button {
@@ -73,7 +82,26 @@ struct MenuBarContentView: View {
             )
         }
 
-        if !sessionManager.isSystemAudioEnabled {
+        if sessionManager.isOverlayVisible {
+            switch sessionManager.overlayPresentation {
+            case .folded:
+                Button {
+                    sessionManager.expandOverlay()
+                } label: {
+                    Label("Expand Overlay", systemImage: "rectangle.expand.vertical")
+                }
+            case .expanded:
+                Button {
+                    sessionManager.foldOverlay()
+                } label: {
+                    Label("Fold Overlay", systemImage: "rectangle.compress.vertical")
+                }
+            case .hidden:
+                EmptyView()
+            }
+        }
+
+        if !sessionManager.isSystemAudioEnabled, sessionManager.state == .recording {
             Button {
                 Task { await sessionManager.enableSystemAudio() }
             } label: {
@@ -170,13 +198,6 @@ struct MenuBarContentView: View {
         }
         .disabled(sessionManager.isAwaitingAnswer)
     }
-
-    private func elapsed(since date: Date) -> String {
-        let seconds = Int(Date().timeIntervalSince(date))
-        let minutes = seconds / 60
-        let remainder = seconds % 60
-        return String(format: "%02d:%02d", minutes, remainder)
-    }
 }
 
 enum MenuBarIcon {
@@ -186,6 +207,8 @@ enum MenuBarIcon {
             "waveform.circle"
         case .recording:
             "mic.fill"
+        case .paused:
+            "pause.circle"
         }
     }
 }
@@ -196,6 +219,17 @@ struct MenuBarIconLabel: View {
     var body: some View {
         Image(systemName: MenuBarIcon.systemImage(for: sessionManager.state))
             .symbolRenderingMode(sessionManager.state == .recording ? .multicolor : .monochrome)
-            .foregroundStyle(sessionManager.state == .recording ? .red : .primary)
+            .foregroundStyle(iconColor)
+    }
+
+    private var iconColor: Color {
+        switch sessionManager.state {
+        case .recording:
+            .red
+        case .paused:
+            .secondary
+        default:
+            .primary
+        }
     }
 }

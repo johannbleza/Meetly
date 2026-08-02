@@ -17,6 +17,7 @@ struct MeetlyApp: App {
             MeetingSession.self,
             TranscriptSegment.self,
             MeetingSummary.self,
+            ActionItem.self,
         ])
         let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
 

@@ -21,30 +21,46 @@ struct ActiveMeetingControls: View {
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
 
             case .recording:
-                HStack(spacing: 8) {
-                    Circle()
-                        .fill(AppTheme.danger)
-                        .frame(width: 8, height: 8)
-                    Text("Recording")
-                        .font(.appCaption.weight(.semibold))
-                        .foregroundStyle(AppTheme.textPrimary)
-                    Spacer()
-                }
+                meetingStatusIndicator(label: "Recording", color: AppTheme.danger)
 
                 Button {
-                    Task { await sessionManager.stopMeeting() }
+                    Task { await sessionManager.pauseMeeting() }
                 } label: {
-                    Label("Stop Meeting", systemImage: "stop.fill")
+                    Label("Pause", systemImage: "pause.fill")
+                        .font(.appBody.weight(.medium))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(AppTheme.textPrimary)
+                .background(AppTheme.bgInput)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(AppTheme.border, lineWidth: 1)
+                }
+
+                stopMeetingButton
+                meetingActions
+
+            case .paused:
+                meetingStatusIndicator(label: "Paused", color: .yellow)
+
+                Button {
+                    Task { await sessionManager.resumeMeeting() }
+                } label: {
+                    Label("Resume", systemImage: "play.fill")
                         .font(.appBody.weight(.medium))
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 8)
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.white)
-                .background(AppTheme.danger)
+                .background(AppTheme.accent)
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
 
-                recordingActions
+                stopMeetingButton
+                meetingActions
 
             case .summarizing:
                 HStack(spacing: 8) {
@@ -59,10 +75,42 @@ struct ActiveMeetingControls: View {
         }
     }
 
+    private func meetingStatusIndicator(label: String, color: Color) -> some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(color)
+                .frame(width: 8, height: 8)
+            Text(label)
+                .font(.appCaption.weight(.semibold))
+                .foregroundStyle(AppTheme.textPrimary)
+            Spacer()
+            TimelineView(.periodic(from: .now, by: 1)) { _ in
+                Text(MeetingTimeFormatting.elapsed(sessionManager.sessionElapsedTime))
+                    .font(.appCaption.monospacedDigit())
+                    .foregroundStyle(AppTheme.textSecondary)
+            }
+        }
+    }
+
+    private var stopMeetingButton: some View {
+        Button {
+            Task { await sessionManager.stopMeeting() }
+        } label: {
+            Label("Stop Meeting", systemImage: "stop.fill")
+                .font(.appBody.weight(.medium))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 8)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.white)
+        .background(AppTheme.danger)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
     @ViewBuilder
-    private var recordingActions: some View {
+    private var meetingActions: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if !sessionManager.isSystemAudioEnabled {
+            if !sessionManager.isSystemAudioEnabled, sessionManager.state == .recording {
                 compactButton(
                     title: "Capture Meeting Audio",
                     icon: "speaker.wave.2.fill",
@@ -80,6 +128,29 @@ struct ActiveMeetingControls: View {
                     sessionManager.toggleOverlay()
                 }
             )
+
+            if sessionManager.isOverlayVisible {
+                switch sessionManager.overlayPresentation {
+                case .folded:
+                    compactButton(
+                        title: "Expand Overlay",
+                        icon: "rectangle.expand.vertical",
+                        action: {
+                            sessionManager.expandOverlay()
+                        }
+                    )
+                case .expanded:
+                    compactButton(
+                        title: "Fold Overlay",
+                        icon: "rectangle.compress.vertical",
+                        action: {
+                            sessionManager.foldOverlay()
+                        }
+                    )
+                case .hidden:
+                    EmptyView()
+                }
+            }
         }
     }
 

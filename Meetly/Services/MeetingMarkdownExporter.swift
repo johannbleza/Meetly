@@ -33,11 +33,12 @@ enum MeetingMarkdownExporter {
                 lines.append("")
             }
 
-            if !summary.actionItems.isEmpty {
+            if !summary.sortedActionItems.isEmpty {
                 lines.append("## Action Items")
                 lines.append("")
-                for item in summary.actionItems {
-                    lines.append("- [ ] \(item)")
+                for item in summary.sortedActionItems {
+                    let checkbox = item.isCompleted ? "[x]" : "[ ]"
+                    lines.append("- \(checkbox) \(item.text)")
                 }
                 lines.append("")
             }

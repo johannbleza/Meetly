@@ -8,6 +8,11 @@ struct SessionDetailView: View {
     var onExport: (() -> Void)?
     var onDelete: (() -> Void)?
 
+    @Environment(\.modelContext) private var modelContext
+    @State private var qaController: MeetingQAController?
+    @State private var actionItemsController: ActionItemsController?
+    @State private var questionText = ""
+
     var body: some View {
         VStack(spacing: 0) {
             detailHeader
@@ -18,13 +23,64 @@ struct SessionDetailView: View {
                     if let summary = session.summary {
                         summarySection(summary)
                     }
+                    askAISection
                     transcriptSection
                 }
                 .padding(24)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+
+            AppDivider(axis: .horizontal)
+
+            MeetingQAInputBar(
+                text: $questionText,
+                isDisabled: qaController.map { !$0.canAsk } ?? true
+            ) { question in
+                Task { await qaController?.ask(question) }
+            }
         }
         .appPanelBackground(AppTheme.bgPrimary)
+        .onAppear {
+            qaController = MeetingQAController(session: session)
+            actionItemsController = ActionItemsController(session: session, modelContext: modelContext)
+        }
+        .onChange(of: session.id) { _, _ in
+            qaController = MeetingQAController(session: session)
+            actionItemsController = ActionItemsController(session: session, modelContext: modelContext)
+            questionText = ""
+        }
+    }
+
+    private var askAISection: some View {
+        sectionBlock(title: "Ask AI") {
+            VStack(alignment: .leading, spacing: 12) {
+                if let qaController {
+                    if !qaController.isAvailable {
+                        Text(qaController.availabilityMessage ?? "Configure AI in Settings to ask questions about this meeting.")
+                            .font(.appCaption)
+                            .foregroundStyle(AppTheme.textSecondary)
+                    } else if !qaController.hasContent {
+                        Text("This meeting has no transcript or summary to ask about yet.")
+                            .font(.appCaption)
+                            .foregroundStyle(AppTheme.textSecondary)
+                    } else if qaController.messages.isEmpty {
+                        Text("Ask a question about this meeting's transcript or summary.")
+                            .font(.appCaption)
+                            .foregroundStyle(AppTheme.textSecondary)
+                    }
+
+                    if !qaController.messages.isEmpty || qaController.isAwaitingAnswer {
+                        ChatMessageListView(
+                            messages: qaController.messages,
+                            isAwaitingAnswer: qaController.isAwaitingAnswer,
+                            style: .home,
+                            scrollable: false
+                        )
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 
     private var detailHeader: some View {
@@ -111,21 +167,57 @@ struct SessionDetailView: View {
             }
         }
 
-        if !summary.actionItems.isEmpty {
-            sectionBlock(title: "Action Items") {
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(summary.actionItems, id: \.self) { item in
-                        HStack(alignment: .top, spacing: 8) {
-                            Text("•")
-                                .foregroundStyle(AppTheme.accent)
-                            Text(item)
-                                .font(.appBody)
-                                .foregroundStyle(AppTheme.textPrimary)
+        actionItemsSection(summary)
+    }
+
+    @ViewBuilder
+    private func actionItemsSection(_ summary: MeetingSummary) -> some View {
+        sectionBlock(title: "Action Items") {
+            VStack(alignment: .leading, spacing: 10) {
+                let items = summary.sortedActionItems
+
+                if items.isEmpty {
+                    Text("No action items yet. Generate them from the meeting summary and transcript.")
+                        .font(.appCaption)
+                        .foregroundStyle(AppTheme.textSecondary)
+                } else {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(items, id: \.persistentModelID) { item in
+                            ActionItemRow(item: item) {
+                                actionItemsController?.toggleCompletion(for: item)
+                            }
                         }
                     }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+
+                if let actionItemsController {
+                    if let errorMessage = actionItemsController.errorMessage {
+                        Text(errorMessage)
+                            .font(.appCaption)
+                            .foregroundStyle(AppTheme.danger)
+                    }
+
+                    Button {
+                        Task { await actionItemsController.generate() }
+                    } label: {
+                        HStack(spacing: 6) {
+                            if actionItemsController.isGenerating {
+                                ProgressView()
+                                    .controlSize(.small)
+                            } else {
+                                Image(systemName: "sparkles")
+                            }
+                            Text(items.isEmpty ? "Generate Action Items" : "Regenerate Action Items")
+                        }
+                        .font(.appCaption.weight(.medium))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(AppTheme.accent)
+                    .disabled(!actionItemsController.canGenerate)
+                    .opacity(actionItemsController.canGenerate ? 1 : 0.5)
+                }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -183,6 +275,31 @@ struct SessionDetailView: View {
     }
 }
 
+private struct ActionItemRow: View {
+    let item: ActionItem
+    let onToggle: () -> Void
+
+    var body: some View {
+        Button(action: onToggle) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: item.isCompleted ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 16))
+                    .foregroundStyle(item.isCompleted ? AppTheme.success : AppTheme.textSecondary)
+                    .frame(width: 20, alignment: .center)
+
+                Text(item.text)
+                    .font(.appBody)
+                    .foregroundStyle(item.isCompleted ? AppTheme.textSecondary : AppTheme.textPrimary)
+                    .strikethrough(item.isCompleted, color: AppTheme.textSecondary)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 #Preview {
     let session = MeetingSession(title: "Weekly Sync")
     session.segments = [
@@ -192,7 +309,10 @@ struct SessionDetailView: View {
     session.summary = MeetingSummary(
         summaryText: "The team reviewed the roadmap and agreed on next steps.",
         keyPoints: ["Roadmap review"],
-        actionItems: ["Share updated timeline"]
+        actionItems: [
+            ActionItem(text: "Share updated timeline", sortOrder: 0),
+            ActionItem(text: "Schedule design review", sortOrder: 1),
+        ]
     )
     return SessionDetailView(
         session: session,

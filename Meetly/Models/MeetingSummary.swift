@@ -5,14 +5,15 @@ import SwiftData
 final class MeetingSummary {
     var summaryText: String
     var keyPoints: [String]
-    var actionItems: [String]
+    @Relationship(deleteRule: .cascade, inverse: \ActionItem.summary)
+    var actionItems: [ActionItem]
     var generatedAt: Date
     var session: MeetingSession?
 
     init(
         summaryText: String,
         keyPoints: [String] = [],
-        actionItems: [String] = [],
+        actionItems: [ActionItem] = [],
         generatedAt: Date = .now,
         session: MeetingSession? = nil
     ) {
@@ -21,5 +22,9 @@ final class MeetingSummary {
         self.actionItems = actionItems
         self.generatedAt = generatedAt
         self.session = session
+    }
+
+    var sortedActionItems: [ActionItem] {
+        actionItems.sorted { $0.sortOrder < $1.sortOrder }
     }
 }

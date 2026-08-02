@@ -45,6 +45,15 @@ final class AIService {
         }
     }
 
+    func generateActionItems(from context: String) async throws -> [String] {
+        switch provider {
+        case .appleIntelligence:
+            try await foundationClient.generateActionItems(from: context)
+        case .gemini:
+            try await geminiClient.generateActionItems(from: context)
+        }
+    }
+
     func testConnection() async throws {
         switch provider {
         case .appleIntelligence:

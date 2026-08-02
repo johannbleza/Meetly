@@ -54,7 +54,7 @@ extension MeetingSession {
             if summary.keyPoints.contains(where: { $0.lowercased().contains(needle) }) {
                 return true
             }
-            if summary.actionItems.contains(where: { $0.lowercased().contains(needle) }) {
+            if summary.actionItems.contains(where: { $0.text.lowercased().contains(needle) }) {
                 return true
             }
         }

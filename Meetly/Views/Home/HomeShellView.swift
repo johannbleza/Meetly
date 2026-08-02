@@ -185,5 +185,5 @@ struct HomeShellView: View {
     HomeShellView(sessionManager: SessionManager())
         .frame(width: 1100, height: 720)
         .preferredColorScheme(.dark)
-        .modelContainer(for: [MeetingSession.self, TranscriptSegment.self, MeetingSummary.self], inMemory: true)
+        .modelContainer(for: [MeetingSession.self, TranscriptSegment.self, MeetingSummary.self, ActionItem.self], inMemory: true)
 }

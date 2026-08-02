@@ -133,5 +133,5 @@ struct MeetingsSidebarView: View {
     )
     .frame(height: 500)
     .preferredColorScheme(.dark)
-    .modelContainer(for: [MeetingSession.self, TranscriptSegment.self, MeetingSummary.self], inMemory: true)
+    .modelContainer(for: [MeetingSession.self, TranscriptSegment.self, MeetingSummary.self, ActionItem.self], inMemory: true)
 }

@@ -54,6 +54,20 @@ final class AudioCaptureService {
         }
     }
 
+    func pause() async {
+        microphoneCapture.stop()
+        await systemAudioCapture.stop()
+    }
+
+    func resume() async throws -> String? {
+        wireCaptureCallbacks()
+        try microphoneCapture.start()
+        if isSystemAudioRunning {
+            return await startSystemAudio(forcePicker: false)
+        }
+        return nil
+    }
+
     func stop() async {
         microphoneCapture.stop()
         await systemAudioCapture.stop()

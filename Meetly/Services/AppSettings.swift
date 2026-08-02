@@ -27,4 +27,12 @@ enum AppSettings {
         }
         set { defaults.set(newValue, forKey: "overlayOpacity") }
     }
+
+    static var hideFromScreenShare: Bool {
+        get {
+            if defaults.object(forKey: "hideFromScreenShare") == nil { return true }
+            return defaults.bool(forKey: "hideFromScreenShare")
+        }
+        set { defaults.set(newValue, forKey: "hideFromScreenShare") }
+    }
 }
