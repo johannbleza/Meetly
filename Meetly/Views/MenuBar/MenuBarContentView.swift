@@ -100,13 +100,13 @@ struct MenuBarContentView: View {
                 Button {
                     sessionManager.expandOverlay()
                 } label: {
-                    Label("Expand Overlay", systemImage: "rectangle.expand.vertical")
+                    Label("Expand Overlay", systemImage: "chevron.down")
                 }
             case .expanded:
                 Button {
                     sessionManager.foldOverlay()
                 } label: {
-                    Label("Fold Overlay", systemImage: "rectangle.compress.vertical")
+                    Label("Fold Overlay", systemImage: "chevron.up")
                 }
             case .hidden:
                 EmptyView()

@@ -30,8 +30,12 @@ final class OverlayPanelController {
     private var preferredMaxHeight: CGFloat = OverlayGlassStyle.panelMaxHeight
     private var presentation: OverlayPresentation = .hidden
     private var onImagePaste: (() -> Void)?
-    /// Ignore content-driven resize while the panel is animating fold/expand.
+    /// Ignore content-driven resize while SwiftUI animates fold/expand.
     private var suppressPreferredSizeUntil: Date?
+    private var isAnimatingContentResize = false
+    private var preferImmediateSizeSync = false
+    /// Deferred window-frame snap scheduled for the end of a fold animation.
+    private var pendingPresentationWork: DispatchWorkItem?
 
     private init() {}
 
@@ -78,14 +82,16 @@ final class OverlayPanelController {
 
     func updatePreferredSize(_ size: CGSize, maxHeight: CGFloat) {
         guard let panel, presentation == .expanded else { return }
+        if isAnimatingContentResize { return }
         if let suppressPreferredSizeUntil, Date() < suppressPreferredSizeUntil {
             return
         }
         applyHeight(
             clampedHeight(for: size.height, maxHeight: maxHeight),
             to: panel,
-            tracksExpandedHeight: true
+            animated: !preferImmediateSizeSync
         )
+        preferImmediateSizeSync = false
     }
 
     func resetAppliedHeight() {
@@ -99,6 +105,8 @@ final class OverlayPanelController {
             preferredMaxHeight = maxExpandedHeight
         }
         guard let panel else { return }
+        pendingPresentationWork?.cancel()
+        pendingPresentationWork = nil
 
         switch presentation {
         case .hidden:
@@ -108,22 +116,29 @@ final class OverlayPanelController {
             if panel.frame.height > OverlayGlassStyle.panelFoldedHeight + OverlayGlassStyle.resizeThreshold {
                 lastExpandedHeight = panel.frame.height
             }
-            suppressPreferredSizeUntil = Date().addingTimeInterval(OverlayGlassStyle.resizeDuration + 0.05)
-            applyHeight(
-                OverlayGlassStyle.panelFoldedHeight,
-                to: panel,
-                tracksExpandedHeight: false
+            suppressPreferredSizeUntil = Date().addingTimeInterval(OverlayGlassStyle.resizeDuration + 0.1)
+            // SwiftUI animates the visual collapse inside the (transparent) window;
+            // once it finishes, snap the window frame down without animating.
+            let work = DispatchWorkItem { [weak self] in
+                guard let self, self.presentation == .folded, let panel = self.panel else { return }
+                self.setPanelHeightInstantly(OverlayGlassStyle.panelFoldedHeight, panel: panel)
+            }
+            pendingPresentationWork = work
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + OverlayGlassStyle.resizeDuration + 0.05,
+                execute: work
             )
         case .expanded:
             let baseHeight = sessionManager?.isMeetingActive == true
-                ? lastExpandedHeight
+                ? max(lastExpandedHeight, minimumExpandedHeight)
                 : OverlayGlassStyle.panelIdleMinHeight
-            suppressPreferredSizeUntil = Date().addingTimeInterval(OverlayGlassStyle.resizeDuration + 0.05)
-            applyHeight(
-                clampedHeight(for: baseHeight, maxHeight: preferredMaxHeight),
-                to: panel,
-                tracksExpandedHeight: true
-            )
+            suppressPreferredSizeUntil = Date().addingTimeInterval(OverlayGlassStyle.resizeDuration + 0.1)
+            preferImmediateSizeSync = true
+            // Grow the window immediately (it is invisible) so the SwiftUI
+            // expansion animates open inside it without being clipped.
+            let height = clampedHeight(for: baseHeight, maxHeight: preferredMaxHeight)
+            setPanelHeightInstantly(height, panel: panel)
+            lastExpandedHeight = height
         }
     }
 
@@ -143,31 +158,48 @@ final class OverlayPanelController {
         )
     }
 
-    private func applyHeight(
-        _ height: CGFloat,
-        to panel: NSPanel,
-        tracksExpandedHeight: Bool
-    ) {
+    /// Sets the window frame without animation, keeping the top edge anchored.
+    private func setPanelHeightInstantly(_ height: CGFloat, panel: NSPanel) {
+        guard height.isFinite, height > 0 else { return }
+        var frame = panel.frame
+        let topEdge = frame.maxY
+        frame.size = NSSize(width: OverlayGlassStyle.panelWidth, height: height)
+        frame.origin.y = topEdge - height
+        panel.setFrame(frame, display: true)
+        lastAppliedHeight = height
+    }
+
+    /// Content-driven resize while expanded (e.g. an answer growing).
+    private func applyHeight(_ height: CGFloat, to panel: NSPanel, animated: Bool) {
         guard height.isFinite, height > 0 else { return }
         let currentPanelHeight = panel.frame.height
         let threshold = OverlayGlassStyle.resizeThreshold
         guard abs(height - lastAppliedHeight) > threshold
             || abs(height - currentPanelHeight) > threshold else { return }
         lastAppliedHeight = height
-        if tracksExpandedHeight {
-            lastExpandedHeight = height
-        }
+        lastExpandedHeight = height
 
         var frame = panel.frame
         let topEdge = frame.maxY
         frame.size = NSSize(width: OverlayGlassStyle.panelWidth, height: height)
         frame.origin.y = topEdge - height
 
+        guard animated else {
+            panel.setFrame(frame, display: true)
+            return
+        }
+
+        isAnimatingContentResize = true
         NSAnimationContext.runAnimationGroup { context in
             context.duration = OverlayGlassStyle.resizeDuration
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             context.allowsImplicitAnimation = true
             panel.animator().setFrame(frame, display: true)
+        } completionHandler: {
+            Task { @MainActor in
+                self.isAnimatingContentResize = false
+                self.lastAppliedHeight = panel.frame.height
+            }
         }
     }
 
@@ -179,6 +211,10 @@ final class OverlayPanelController {
 
         let hostingView = NSHostingView(rootView: contentView)
         hostingView.translatesAutoresizingMaskIntoConstraints = false
+        hostingView.clipsToBounds = true
+        // Panel frame is driven explicitly for fold/expand; don't let SwiftUI
+        // intrinsic size push the window back open while folded.
+        hostingView.sizingOptions = []
 
         let panel = KeyablePanel(
             contentRect: NSRect(
@@ -201,8 +237,11 @@ final class OverlayPanelController {
         panel.isOpaque = false
         panel.hasShadow = false
         panel.hidesOnDeactivate = false
-        panel.contentView = NSView()
-        panel.contentView?.addSubview(hostingView)
+        let rootView = NSView()
+        rootView.wantsLayer = true
+        rootView.clipsToBounds = true
+        panel.contentView = rootView
+        rootView.addSubview(hostingView)
 
         if let contentView = panel.contentView {
             NSLayoutConstraint.activate([

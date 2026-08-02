@@ -49,7 +49,7 @@ struct OverlayMeetingToolbar: View {
                     sessionManager.hideOverlay()
                 }
                 OverlayToolbarIconButton(
-                    systemImage: isFolded ? "rectangle.expand.vertical" : "rectangle.compress.vertical",
+                    systemImage: isFolded ? "chevron.down" : "chevron.up",
                     help: isFolded ? "Expand overlay" : "Fold overlay"
                 ) {
                     if isFolded {

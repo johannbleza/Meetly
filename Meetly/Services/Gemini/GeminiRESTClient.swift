@@ -19,12 +19,14 @@ struct GeminiRESTClient {
     func testConnection() async throws {
         _ = try await generateText(
             prompt: "Reply with exactly: OK",
-            systemInstruction: "Reply briefly."
+            systemInstruction: "Reply briefly.",
+            enableWebSearch: false
         )
     }
 
     func answerQuestion(transcript: String, question: String, images: [ChatImageAttachment]) async throws -> String {
         let context = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        let webSearch = AppSettings.geminiWebSearchEnabled
         let imageLabel = images.count > 1 ? "Images are attached" : "An image is attached"
         let imageInstruction = images.count > 1
             ? "Use the attached images to answer the user's question."
@@ -39,8 +41,7 @@ struct GeminiRESTClient {
             User question:
             \(question)
 
-            If the question depends on meeting context, tell the user you're still listening and no speech has been transcribed yet. \
-            Otherwise answer based on the \(images.count > 1 ? "images" : "image") alone. \
+            \(emptyTranscriptGuidance(webSearchEnabled: webSearch, imageFallback: images.count > 1 ? "images" : "image"))
             Respond in plain text only — no markdown, bullet lists, headers, or other formatting.
             """
         } else {
@@ -48,11 +49,12 @@ struct GeminiRESTClient {
             Meeting transcript:
             \(context)
 
-            \(imageLabel). Use both the meeting transcript and the \(images.count > 1 ? "images" : "image") to answer the user's question.
+            \(imageLabel). Prefer the meeting transcript and the \(images.count > 1 ? "images" : "image") when they answer the question.
 
             User question:
             \(question)
 
+            \(webSearchGuidance(enabled: webSearch))
             Be concise. Respond in plain text only — no markdown, bullet lists, headers, or other formatting.
             """
         }
@@ -64,15 +66,14 @@ struct GeminiRESTClient {
 
         return try await generateMultimodalText(
             parts: parts,
-            systemInstruction: """
-            You are a meeting assistant. Answer questions using meeting transcript context and any attached images. \
-            Always respond in plain text. Never use markdown or other text formatting.
-            """
+            systemInstruction: qaSystemInstruction(webSearchEnabled: webSearch, includesImages: true),
+            enableWebSearch: webSearch
         )
     }
 
     func answerQuestion(transcript: String, question: String) async throws -> String {
         let context = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        let webSearch = AppSettings.geminiWebSearchEnabled
         let prompt: String
         if context.isEmpty {
             prompt = """
@@ -81,8 +82,7 @@ struct GeminiRESTClient {
             User question:
             \(question)
 
-            Tell the user you're still listening and no speech has been transcribed yet. \
-            Suggest they speak clearly into the microphone and wait a few seconds before asking again. \
+            \(emptyTranscriptGuidance(webSearchEnabled: webSearch, imageFallback: nil))
             Respond in plain text only — no markdown, bullet lists, headers, or other formatting.
             """
         } else {
@@ -93,16 +93,15 @@ struct GeminiRESTClient {
             User question:
             \(question)
 
-            Answer the question using only the transcript context. Be concise. \
-            Respond in plain text only — no markdown, bullet lists, headers, or other formatting.
+            Prefer the meeting transcript when it answers the question. \
+            \(webSearchGuidance(enabled: webSearch))
+            Be concise. Respond in plain text only — no markdown, bullet lists, headers, or other formatting.
             """
         }
         return try await generateText(
             prompt: prompt,
-            systemInstruction: """
-            You are a meeting assistant. Answer questions based on the meeting transcript. \
-            Always respond in plain text. Never use markdown or other text formatting.
-            """
+            systemInstruction: qaSystemInstruction(webSearchEnabled: webSearch, includesImages: false),
+            enableWebSearch: webSearch
         )
     }
 
@@ -139,11 +138,71 @@ struct GeminiRESTClient {
         return output.actionItems
     }
 
-    private func generateMultimodalText(parts: [Part], systemInstruction: String) async throws -> String {
+    private func qaSystemInstruction(webSearchEnabled: Bool, includesImages: Bool) -> String {
+        let sources: String
+        if includesImages && webSearchEnabled {
+            sources = "meeting transcript context, attached images, and web search when needed"
+        } else if includesImages {
+            sources = "meeting transcript context and any attached images"
+        } else if webSearchEnabled {
+            sources = "meeting transcript context, and web search when the question needs current or external knowledge"
+        } else {
+            sources = "the meeting transcript"
+        }
+
+        return """
+        You are a meeting assistant. Answer questions using \(sources). \
+        Always respond in plain text. Never use markdown or other text formatting.
+        """
+    }
+
+    private func webSearchGuidance(enabled: Bool) -> String {
+        guard enabled else {
+            return "Answer using only the provided meeting context."
+        }
+        return """
+        If the question needs current facts, definitions, or knowledge outside the transcript, use web search. \
+        Otherwise answer from the meeting context alone.
+        """
+    }
+
+    private func emptyTranscriptGuidance(webSearchEnabled: Bool, imageFallback: String?) -> String {
+        if webSearchEnabled {
+            let fallbackClause: String
+            if let imageFallback {
+                fallbackClause = "using the \(imageFallback) and web search as needed"
+            } else {
+                fallbackClause = "using web search as needed"
+            }
+            return """
+            If the question depends on meeting context, tell the user you're still listening and no speech has been transcribed yet. \
+            If the question can be answered without meeting context, answer it \(fallbackClause).
+            """
+        }
+
+        if let imageFallback {
+            return """
+            If the question depends on meeting context, tell the user you're still listening and no speech has been transcribed yet. \
+            Otherwise answer based on the \(imageFallback) alone.
+            """
+        }
+
+        return """
+        Tell the user you're still listening and no speech has been transcribed yet. \
+        Suggest they speak clearly into the microphone and wait a few seconds before asking again.
+        """
+    }
+
+    private func generateMultimodalText(
+        parts: [Part],
+        systemInstruction: String,
+        enableWebSearch: Bool
+    ) async throws -> String {
         let url = try GeminiConfig.generateContentURL(model: GeminiConfig.textModel)
         let body = GenerateContentRequest(
             systemInstruction: SystemInstruction(parts: [Part(text: systemInstruction)]),
-            contents: [Content(role: "user", parts: parts)]
+            contents: [Content(role: "user", parts: parts)],
+            tools: enableWebSearch ? [.googleSearchTool] : nil
         )
 
         let response: GenerateContentResponse = try await post(url: url, body: body)
@@ -153,11 +212,16 @@ struct GeminiRESTClient {
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private func generateText(prompt: String, systemInstruction: String) async throws -> String {
+    private func generateText(
+        prompt: String,
+        systemInstruction: String,
+        enableWebSearch: Bool
+    ) async throws -> String {
         let url = try GeminiConfig.generateContentURL(model: GeminiConfig.textModel)
         let body = GenerateContentRequest(
             systemInstruction: SystemInstruction(parts: [Part(text: systemInstruction)]),
-            contents: [Content(role: "user", parts: [Part(text: prompt)])]
+            contents: [Content(role: "user", parts: [Part(text: prompt)])],
+            tools: enableWebSearch ? [.googleSearchTool] : nil
         )
 
         let response: GenerateContentResponse = try await post(url: url, body: body)
@@ -209,7 +273,20 @@ private struct GenerateContentRequest: Encodable {
     var systemInstruction: SystemInstruction?
     var contents: [Content]
     var generationConfig: GenerationConfig?
+    var tools: [Tool]?
 }
+
+private struct Tool: Encodable {
+    var googleSearch: EmptyObject?
+
+    static let googleSearchTool = Tool(googleSearch: EmptyObject())
+
+    enum CodingKeys: String, CodingKey {
+        case googleSearch = "google_search"
+    }
+}
+
+private struct EmptyObject: Encodable {}
 
 private struct SystemInstruction: Encodable {
     var parts: [Part]

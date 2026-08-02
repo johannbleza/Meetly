@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 struct SettingsView: View {
     @State private var aiProvider = AppSettings.aiProvider
     @State private var textModel = AppSettings.geminiTextModel
+    @State private var geminiWebSearchEnabled = AppSettings.geminiWebSearchEnabled
     @State private var overlayOpacity = AppSettings.overlayOpacity
     @State private var hideFromScreenShare = AppSettings.hideFromScreenShare
     @State private var apiKeyDraft = ""
@@ -139,6 +140,15 @@ struct SettingsView: View {
                 .onChange(of: textModel) { _, newValue in
                     AppSettings.geminiTextModel = newValue
                 }
+
+            Toggle("Allow web search for Q&A", isOn: $geminiWebSearchEnabled)
+                .onChange(of: geminiWebSearchEnabled) { _, newValue in
+                    AppSettings.geminiWebSearchEnabled = newValue
+                }
+
+            Text("Lets Gemini use Google Search when a question needs current facts or knowledge outside the meeting transcript. Summaries stay transcript-only.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
             testConnectionButton(isEnabled: hasStoredAPIKey || !apiKeyDraft.isEmpty)
         }

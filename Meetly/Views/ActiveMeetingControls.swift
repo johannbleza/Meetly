@@ -135,7 +135,7 @@ struct ActiveMeetingControls: View {
                 case .folded:
                     compactButton(
                         title: "Expand Overlay",
-                        icon: "rectangle.expand.vertical",
+                        icon: "chevron.down",
                         action: {
                             sessionManager.expandOverlay()
                         }
@@ -143,7 +143,7 @@ struct ActiveMeetingControls: View {
                 case .expanded:
                     compactButton(
                         title: "Fold Overlay",
-                        icon: "rectangle.compress.vertical",
+                        icon: "chevron.up",
                         action: {
                             sessionManager.foldOverlay()
                         }

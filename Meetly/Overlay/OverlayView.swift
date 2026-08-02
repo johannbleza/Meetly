@@ -172,17 +172,17 @@ struct OverlayView: View {
                 }
                 .layoutPriority(1)
             }
-            .opacity(isFolded ? 0 : 1)
+            // SwiftUI animates the fold/expand; the window frame only snaps
+            // once the animation settles (see OverlayPanelController).
             .frame(maxHeight: isFolded ? 0 : nil, alignment: .top)
             .clipped()
             .allowsHitTesting(!isFolded)
         }
         .frame(width: OverlayGlassStyle.panelWidth, alignment: .top)
-        // Measure content height before filling the panel, so fold/expand sizing stays accurate.
         .reportPreferredSize(maxHeight: expandedMaxHeight)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .overlayGlassPanel()
         .shadow(color: .black.opacity(0.12), radius: 16, y: 6)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .onAppear {
             OverlayPanelController.shared.setPreferredMaxHeight(expandedMaxHeight)
             OverlayPanelController.shared.setImagePasteHandler { [sessionManager] in

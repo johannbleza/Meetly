@@ -20,6 +20,15 @@ enum AppSettings {
         set { defaults.set(newValue, forKey: "geminiTextModel") }
     }
 
+    /// When enabled, Gemini Q&A may use Google Search for questions that need current or external knowledge.
+    static var geminiWebSearchEnabled: Bool {
+        get {
+            if defaults.object(forKey: "geminiWebSearchEnabled") == nil { return true }
+            return defaults.bool(forKey: "geminiWebSearchEnabled")
+        }
+        set { defaults.set(newValue, forKey: "geminiWebSearchEnabled") }
+    }
+
     static var overlayOpacity: Double {
         get {
             let value = defaults.double(forKey: "overlayOpacity")
