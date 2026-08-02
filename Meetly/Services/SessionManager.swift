@@ -102,6 +102,17 @@ final class SessionManager {
         }
     }
 
+    func handleOverlayShortcut() {
+        switch state {
+        case .idle:
+            Task { await startMeeting() }
+        case .recording, .paused:
+            toggleOverlay()
+        case .summarizing:
+            break
+        }
+    }
+
     func showOverlay() {
         overlayPresentation = .expanded
         OverlayPanelController.shared.show()

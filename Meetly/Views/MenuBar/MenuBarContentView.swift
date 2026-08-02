@@ -28,7 +28,7 @@ struct MenuBarContentView: View {
         Button {
             Task { await sessionManager.startMeeting() }
         } label: {
-            Label("Start Meeting", systemImage: "mic.fill")
+            Label("Start Meeting\t⌘\\", systemImage: "mic.fill")
         }
 
         Divider()
@@ -77,7 +77,7 @@ struct MenuBarContentView: View {
             sessionManager.toggleOverlay()
         } label: {
             Label(
-                sessionManager.isOverlayVisible ? "Hide Overlay" : "Show Overlay",
+                overlayToggleTitle,
                 systemImage: sessionManager.isOverlayVisible ? "eye.slash" : "eye"
             )
         }
@@ -176,6 +176,11 @@ struct MenuBarContentView: View {
                 Label("Show Window", systemImage: "macwindow")
             }
         }
+    }
+
+    private var overlayToggleTitle: String {
+        let action = sessionManager.isOverlayVisible ? "Hide Overlay" : "Show Overlay"
+        return "\(action)\t⌘\\"
     }
 
     private var quitButton: some View {

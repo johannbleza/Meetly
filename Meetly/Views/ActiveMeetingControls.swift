@@ -126,7 +126,8 @@ struct ActiveMeetingControls: View {
                 icon: sessionManager.isOverlayVisible ? "eye.slash" : "eye",
                 action: {
                     sessionManager.toggleOverlay()
-                }
+                },
+                help: "Toggle overlay (⌘\\)."
             )
 
             if sessionManager.isOverlayVisible {

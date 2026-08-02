@@ -19,6 +19,7 @@ final class OverlayPanelController {
 
     func configure(sessionManager: SessionManager) {
         self.sessionManager = sessionManager
+        OverlayKeyboardShortcutController.shared.configure(sessionManager: sessionManager)
         rebuildPanelIfNeeded()
     }
 
