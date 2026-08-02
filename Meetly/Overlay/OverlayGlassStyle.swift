@@ -4,6 +4,7 @@ enum OverlayGlassStyle {
     static let cornerRadius: CGFloat = 14
     static let panelWidth: CGFloat = 420
     static let panelMinHeight: CGFloat = 280
+    static let panelIdleMinHeight: CGFloat = 150
     static let panelMaxHeight: CGFloat = 520
     static let panelFoldedHeight: CGFloat = 48
     static let contentMaxHeightCompact: CGFloat = 220

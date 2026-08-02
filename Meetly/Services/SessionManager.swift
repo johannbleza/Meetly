@@ -104,9 +104,7 @@ final class SessionManager {
 
     func handleOverlayShortcut() {
         switch state {
-        case .idle:
-            Task { await startMeeting() }
-        case .recording, .paused:
+        case .idle, .recording, .paused:
             toggleOverlay()
         case .summarizing:
             break

@@ -33,10 +33,87 @@ struct OverlayView: View {
             case .folded:
                 OverlayFoldedBar(sessionManager: sessionManager)
             case .expanded, .hidden:
-                expandedOverlay
+                if sessionManager.isMeetingActive {
+                    expandedOverlay
+                } else {
+                    idleOverlay
+                }
             }
         }
         .animation(.easeInOut(duration: 0.2), value: sessionManager.overlayPresentation)
+    }
+
+    private var idleOverlay: some View {
+        VStack(spacing: 0) {
+            idleToolbar
+            Divider().opacity(0.25)
+            idleContent
+        }
+        .frame(width: OverlayGlassStyle.panelWidth)
+        .overlayGlassPanel()
+        .shadow(color: .black.opacity(0.12), radius: 16, y: 6)
+        .background {
+            GeometryReader { proxy in
+                Color.clear.preference(key: OverlayPreferredSizeKey.self, value: proxy.size)
+            }
+        }
+        .onPreferenceChange(OverlayPreferredSizeKey.self) { size in
+            OverlayPanelController.shared.updatePreferredSize(size)
+        }
+    }
+
+    private var idleToolbar: some View {
+        HStack(spacing: 10) {
+            OverlayToolbarIconButton(systemImage: "eye.slash", help: "Hide overlay") {
+                sessionManager.hideOverlay()
+            }
+
+            Spacer(minLength: 0)
+
+            Text("Meetly")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            Spacer(minLength: 0)
+
+            OverlaySettingsButton(sessionManager: sessionManager, isShowingSettings: $isShowingSettings)
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 10)
+        .padding(.bottom, 8)
+    }
+
+    private var idleContent: some View {
+        VStack(spacing: 14) {
+            VStack(spacing: 4) {
+                Text("Ready to record")
+                    .font(.headline)
+                Text("Start when you're in your meeting.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+
+            if let errorMessage = sessionManager.errorMessage {
+                Text(errorMessage)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .multilineTextAlignment(.center)
+            }
+
+            Button {
+                Task { await sessionManager.startMeeting() }
+            } label: {
+                Label("Start Recording", systemImage: "mic.fill")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 14)
+        .padding(.bottom, 18)
+        .frame(maxWidth: .infinity, alignment: .top)
     }
 
     private var expandedOverlay: some View {

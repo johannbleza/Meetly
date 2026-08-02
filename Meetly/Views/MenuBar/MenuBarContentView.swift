@@ -20,6 +20,7 @@ struct MenuBarContentView: View {
         .onAppear {
             sessionManager.configure(modelContext: modelContext)
             OverlayPanelController.shared.configure(sessionManager: sessionManager)
+            OverlayKeyboardShortcutController.shared.configure(sessionManager: sessionManager)
         }
     }
 
@@ -28,7 +29,13 @@ struct MenuBarContentView: View {
         Button {
             Task { await sessionManager.startMeeting() }
         } label: {
-            Label("Start Meeting\t⌘\\", systemImage: "mic.fill")
+            Label("Start Meeting", systemImage: "mic.fill")
+        }
+
+        Button {
+            sessionManager.toggleOverlay()
+        } label: {
+            Label(overlayToggleTitle, systemImage: sessionManager.isOverlayVisible ? "eye.slash" : "eye")
         }
 
         Divider()

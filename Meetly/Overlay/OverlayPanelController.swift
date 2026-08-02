@@ -45,13 +45,7 @@ final class OverlayPanelController {
 
     func updatePreferredSize(_ size: CGSize) {
         guard let panel, presentation == .expanded else { return }
-        applyHeight(
-            min(
-                max(size.height, OverlayGlassStyle.panelMinHeight),
-                OverlayGlassStyle.panelMaxHeight
-            ),
-            to: panel
-        )
+        applyHeight(clampedHeight(for: size.height), to: panel)
     }
 
     func updateForPresentation(_ presentation: OverlayPresentation) {
@@ -64,11 +58,24 @@ final class OverlayPanelController {
         case .folded:
             applyHeight(OverlayGlassStyle.panelFoldedHeight, to: panel)
         case .expanded:
-            applyHeight(
-                max(lastAppliedHeight, OverlayGlassStyle.panelMinHeight),
-                to: panel
-            )
+            let baseHeight = sessionManager?.isMeetingActive == true
+                ? max(lastAppliedHeight, OverlayGlassStyle.panelMinHeight)
+                : OverlayGlassStyle.panelIdleMinHeight
+            applyHeight(clampedHeight(for: baseHeight), to: panel)
         }
+    }
+
+    private var minimumExpandedHeight: CGFloat {
+        sessionManager?.isMeetingActive == true
+            ? OverlayGlassStyle.panelMinHeight
+            : OverlayGlassStyle.panelIdleMinHeight
+    }
+
+    private func clampedHeight(for height: CGFloat) -> CGFloat {
+        min(
+            max(height, minimumExpandedHeight),
+            OverlayGlassStyle.panelMaxHeight
+        )
     }
 
     private func applyHeight(_ height: CGFloat, to panel: NSPanel) {
