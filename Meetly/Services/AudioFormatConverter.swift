@@ -20,6 +20,25 @@ enum AudioFormatConverter {
         return sqrt(sum / Float(frameLength * channelCount))
     }
 
+    static func copy(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+        guard let copy = AVAudioPCMBuffer(pcmFormat: buffer.format, frameCapacity: buffer.frameCapacity) else {
+            return nil
+        }
+        copy.frameLength = buffer.frameLength
+
+        guard let sourceData = buffer.floatChannelData,
+              let destData = copy.floatChannelData else {
+            return nil
+        }
+
+        let channelCount = Int(buffer.format.channelCount)
+        let frameLength = Int(buffer.frameLength)
+        for channel in 0..<channelCount {
+            destData[channel].update(from: sourceData[channel], count: frameLength)
+        }
+        return copy
+    }
+
     static func convert(_ buffer: AVAudioPCMBuffer, to format: AVAudioFormat) -> AVAudioPCMBuffer? {
         guard buffer.format != format else { return buffer }
 

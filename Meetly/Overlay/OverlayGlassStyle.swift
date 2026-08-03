@@ -15,10 +15,18 @@ enum OverlayGlassStyle {
     /// Upper bound for the content area once an answer is visible.
     static let contentMaxHeightAnswer: CGFloat = 360
 
+    static let resizeHandleHeight: CGFloat = 14
+    static let contentMinResizeHeight: CGFloat = contentMaxHeightListening
+    static let contentMaxResizeHeight: CGFloat = 480
+
     static let resizeDuration: TimeInterval = 0.28
     static let resizeAnimation: Animation = .easeInOut(duration: resizeDuration)
     /// Ignore sub-pixel / layout thrash before growing the panel.
     static let resizeThreshold: CGFloat = 1.5
+
+    static func clampContentHeight(_ height: CGFloat) -> CGFloat {
+        min(max(height, contentMinResizeHeight), contentMaxResizeHeight)
+    }
 
     /// Target content-area height for an AI answer, grown from the listening size.
     static func answerContentHeight(measured: CGFloat) -> CGFloat {

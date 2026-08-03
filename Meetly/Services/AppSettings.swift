@@ -44,4 +44,22 @@ enum AppSettings {
         }
         set { defaults.set(newValue, forKey: "hideFromScreenShare") }
     }
+
+    /// When enabled, Meetly prompts for meeting audio capture when a meeting starts.
+    static var captureMeetingAudioByDefault: Bool {
+        get {
+            if defaults.object(forKey: "captureMeetingAudioByDefault") == nil { return true }
+            return defaults.bool(forKey: "captureMeetingAudioByDefault")
+        }
+        set { defaults.set(newValue, forKey: "captureMeetingAudioByDefault") }
+    }
+
+    /// Preferred overlay content-area height (listening / transcript scroll region).
+    static var overlayContentHeight: Double {
+        get {
+            let value = defaults.double(forKey: "overlayContentHeight")
+            return value > 0 ? value : 80
+        }
+        set { defaults.set(newValue, forKey: "overlayContentHeight") }
+    }
 }

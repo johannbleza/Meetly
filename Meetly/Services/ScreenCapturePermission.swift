@@ -1,10 +1,16 @@
 import AppKit
+import CoreGraphics
 import Foundation
 import ScreenCaptureKit
 
 enum ScreenCapturePermission {
     static var executablePath: String {
         Bundle.main.bundleURL.path
+    }
+
+    /// True when Screen Recording TCC is already granted. Does not show a prompt.
+    static var hasScreenRecordingAccess: Bool {
+        CGPreflightScreenCaptureAccess()
     }
 
     static func isPermissionError(_ error: Error) -> Bool {
@@ -41,11 +47,15 @@ enum ScreenCapturePermission {
 
     static var troubleshootingMessage: String {
         """
-        Meetly transcribes your microphone by default — no screen recording permission needed.
+        Meetly transcribes your microphone by default — no Screen Recording permission needed.
 
-        To also capture audio from Zoom, Teams, or other apps, click "Capture Meeting Audio" \
-        during a meeting. macOS groups this under Screen & System Audio Recording even though \
-        Meetly only reads audio, not your screen.
+        To also capture Zoom/Teams audio, use "Capture Meeting Audio" (or enable capture by \
+        default). Meetly uses the macOS share picker so you choose a display once per meeting \
+        without the Screen Recording permission dialog.
+
+        If you previously toggled Meetly in System Settings while running from Xcode, quit the \
+        app fully and relaunch after changing the toggle — macOS only applies that change to a \
+        new process.
         """
     }
 

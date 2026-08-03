@@ -11,6 +11,22 @@ enum Speaker: String, Codable, CaseIterable {
         case .other: "Other"
         }
     }
+
+    init?(rawValue: String) {
+        switch rawValue {
+        case "me":
+            self = .me
+        case "other":
+            self = .other
+        default:
+            // Legacy Person N tags from the reverted diarization experiment.
+            if rawValue.hasPrefix("person-") {
+                self = .other
+            } else {
+                return nil
+            }
+        }
+    }
 }
 
 @Model

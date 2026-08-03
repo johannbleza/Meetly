@@ -3,11 +3,25 @@ import Foundation
 
 @MainActor
 final class AudioCaptureService {
+    private final class BufferHandlers: @unchecked Sendable {
+        var onMic: ((AVAudioPCMBuffer) -> Void)?
+        var onSystem: ((AVAudioPCMBuffer) -> Void)?
+    }
+
     private let microphoneCapture = MicrophoneCapture()
     private let systemAudioCapture = SystemAudioCapture()
+    private let handlers = BufferHandlers()
 
-    var onMicBuffer: ((AVAudioPCMBuffer) -> Void)?
-    var onSystemBuffer: ((AVAudioPCMBuffer) -> Void)?
+    /// Invoked on capture threads (mic tap / ScreenCaptureKit queue).
+    var onMicBuffer: ((AVAudioPCMBuffer) -> Void)? {
+        get { handlers.onMic }
+        set { handlers.onMic = newValue }
+    }
+
+    var onSystemBuffer: ((AVAudioPCMBuffer) -> Void)? {
+        get { handlers.onSystem }
+        set { handlers.onSystem = newValue }
+    }
 
     private(set) var isSystemAudioRunning = false
 
@@ -25,17 +39,23 @@ final class AudioCaptureService {
         return await startSystemAudio(forcePicker: true)
     }
 
-    private func wireCaptureCallbacks() {
-        microphoneCapture.onBuffer = { [weak self] buffer in
-            Task { @MainActor in
-                self?.onMicBuffer?(buffer)
-            }
-        }
+    /// Starts meeting-audio capture via the system share picker.
+    ///
+    /// Always uses `SCContentSharingPicker` instead of programmatic `SCShareableContent`,
+    /// which triggers the Screen Recording permission dialog (and Sequoia re-prompts)
+    /// even when the user already enabled Meetly in System Settings.
+    func startSystemAudioIfPossible() async -> String? {
+        wireCaptureCallbacks()
+        return await startSystemAudio(forcePicker: true)
+    }
 
-        systemAudioCapture.onBuffer = { [weak self] buffer in
-            Task { @MainActor in
-                self?.onSystemBuffer?(buffer)
-            }
+    private func wireCaptureCallbacks() {
+        let handlers = self.handlers
+        microphoneCapture.onBuffer = { buffer in
+            handlers.onMic?(buffer)
+        }
+        systemAudioCapture.onBuffer = { buffer in
+            handlers.onSystem?(buffer)
         }
     }
 
@@ -63,7 +83,14 @@ final class AudioCaptureService {
         wireCaptureCallbacks()
         try microphoneCapture.start()
         if isSystemAudioRunning {
-            return await startSystemAudio(forcePicker: false)
+            // Prefer silent programmatic resume only when TCC is already granted;
+            // otherwise the share picker avoids another Screen Recording dialog.
+            if ScreenCapturePermission.hasScreenRecordingAccess {
+                if await startSystemAudio(forcePicker: false) == nil {
+                    return nil
+                }
+            }
+            return await startSystemAudio(forcePicker: true)
         }
         return nil
     }

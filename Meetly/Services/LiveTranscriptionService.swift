@@ -3,14 +3,54 @@ import Foundation
 
 @MainActor
 final class LiveTranscriptionService {
-    private var micChannel: AppleSpeechChannel?
-    private var systemChannel: AppleSpeechChannel?
-    private var isStartingSystemChannel = false
+    private final class ChannelStorage: @unchecked Sendable {
+        private let lock = NSLock()
+        private var mic: AppleSpeechChannel?
+        private var system: AppleSpeechChannel?
+
+        func set(mic: AppleSpeechChannel?, system: AppleSpeechChannel?) {
+            lock.lock()
+            self.mic = mic
+            self.system = system
+            lock.unlock()
+        }
+
+        func setSystem(_ system: AppleSpeechChannel?) {
+            lock.lock()
+            self.system = system
+            lock.unlock()
+        }
+
+        func take() -> (AppleSpeechChannel?, AppleSpeechChannel?) {
+            lock.lock()
+            let pair = (mic, system)
+            mic = nil
+            system = nil
+            lock.unlock()
+            return pair
+        }
+
+        func micChannel() -> AppleSpeechChannel? {
+            lock.lock()
+            defer { lock.unlock() }
+            return mic
+        }
+
+        func systemChannel() -> AppleSpeechChannel? {
+            lock.lock()
+            defer { lock.unlock() }
+            return system
+        }
+    }
+
+    private let channels = ChannelStorage()
     private var transcriptionLocale: Locale?
     private var localeReserved = false
+    private var isStartingSystemChannel = false
 
     var onPartialResult: ((String, Speaker) -> Void)?
     var onFinalResult: ((String, Speaker) -> Void)?
+    var onSystemChannelError: ((Error) -> Void)?
 
     func prepare() async throws {
         guard await AppleSpeechChannel.requestAuthorization() else {
@@ -32,43 +72,32 @@ final class LiveTranscriptionService {
         let mic = AppleSpeechChannel()
         wireCallbacks(for: mic, speaker: .me)
         try await mic.start(locale: locale)
-        micChannel = mic
+        channels.set(mic: mic, system: nil)
+
+        // Eager-start the system channel so meeting audio has no cold-start gap.
+        await startSystemChannelIfNeeded(reportErrors: false)
     }
 
-    func feedMicBuffer(_ buffer: AVAudioPCMBuffer) {
-        micChannel?.feed(buffer)
+    nonisolated func feedMicBuffer(_ buffer: AVAudioPCMBuffer) {
+        channels.micChannel()?.feed(buffer)
     }
 
-    func feedSystemBuffer(_ buffer: AVAudioPCMBuffer) {
-        if let systemChannel {
-            systemChannel.feed(buffer)
+    nonisolated func feedSystemBuffer(_ buffer: AVAudioPCMBuffer) {
+        if let system = channels.systemChannel() {
+            system.feed(buffer)
             return
         }
 
-        guard !isStartingSystemChannel else { return }
-        isStartingSystemChannel = true
-
         Task { @MainActor in
-            defer { isStartingSystemChannel = false }
-            do {
-                let locale = try await resolvedLocale()
-                let channel = AppleSpeechChannel()
-                wireCallbacks(for: channel, speaker: .other)
-                try await channel.start(locale: locale)
-                systemChannel = channel
-                channel.feed(buffer)
-            } catch {
-                print("System speech channel failed: \(error.localizedDescription)")
-            }
+            await startSystemChannelIfNeeded(reportErrors: true)
         }
     }
 
     func pause() async {
-        await micChannel?.stop()
-        await systemChannel?.stop()
-        micChannel = nil
-        systemChannel = nil
         isStartingSystemChannel = false
+        let (mic, system) = channels.take()
+        await mic?.stop()
+        await system?.stop()
     }
 
     func resume() async throws {
@@ -91,6 +120,24 @@ final class LiveTranscriptionService {
         let locale = try await AppleSpeechChannel.resolveLocale()
         transcriptionLocale = locale
         return locale
+    }
+
+    private func startSystemChannelIfNeeded(reportErrors: Bool) async {
+        guard channels.systemChannel() == nil, !isStartingSystemChannel else { return }
+        isStartingSystemChannel = true
+        defer { isStartingSystemChannel = false }
+
+        do {
+            let locale = try await resolvedLocale()
+            let system = AppleSpeechChannel()
+            wireCallbacks(for: system, speaker: .other)
+            try await system.start(locale: locale)
+            channels.setSystem(system)
+        } catch {
+            if reportErrors {
+                onSystemChannelError?(error)
+            }
+        }
     }
 
     private func wireCallbacks(for channel: AppleSpeechChannel, speaker: Speaker) {

@@ -22,8 +22,14 @@ enum AppleSpeechError: LocalizedError {
     }
 }
 
-@MainActor
-final class AppleSpeechChannel {
+/// Feeds PCM off the main actor; result callbacks are delivered on the MainActor.
+final class AppleSpeechChannel: @unchecked Sendable {
+    private static let liveReportingOptions: Set<SpeechTranscriber.ReportingOption> = [
+        .volatileResults,
+        .fastResults,
+    ]
+
+    private let stateLock = NSLock()
     private var analyzer: SpeechAnalyzer?
     private var transcriber: SpeechTranscriber?
     private var resultTask: Task<Void, Never>?
@@ -70,8 +76,17 @@ final class AppleSpeechChannel {
         throw AppleSpeechError.unsupportedLocale
     }
 
+    static func makeLiveTranscriber(locale: Locale) -> SpeechTranscriber {
+        SpeechTranscriber(
+            locale: locale,
+            transcriptionOptions: [],
+            reportingOptions: liveReportingOptions,
+            attributeOptions: []
+        )
+    }
+
     static func prepareAssets(for locale: Locale) async throws {
-        let transcriber = SpeechTranscriber(locale: locale, preset: .progressiveTranscription)
+        let transcriber = makeLiveTranscriber(locale: locale)
         let status = await AssetInventory.status(forModules: [transcriber])
         guard status != .installed else { return }
         guard let request = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) else {
@@ -89,39 +104,40 @@ final class AppleSpeechChannel {
     }
 
     func start(locale: Locale) async throws {
-        let transcriber = SpeechTranscriber(
-            locale: locale,
-            transcriptionOptions: [],
-            reportingOptions: [.volatileResults],
-            attributeOptions: []
-        )
-        self.transcriber = transcriber
+        let transcriber = Self.makeLiveTranscriber(locale: locale)
 
         guard let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber]) else {
             throw AppleSpeechError.noSupportedAudioFormat
         }
-        analyzerFormat = format
 
         let analyzer = SpeechAnalyzer(modules: [transcriber])
-        self.analyzer = analyzer
         try await analyzer.prepareToAnalyze(in: format)
 
         let (stream, continuation) = AsyncStream<AnalyzerInput>.makeStream()
-        inputContinuation = continuation
         try await analyzer.start(inputSequence: stream)
 
+        stateLock.lock()
+        self.transcriber = transcriber
+        self.analyzer = analyzer
+        self.analyzerFormat = format
+        self.inputContinuation = continuation
+        stateLock.unlock()
+
         resultTask = Task { [weak self] in
-            guard let transcriber = self?.transcriber else { return }
             do {
                 for try await result in transcriber.results {
                     let text = String(result.text.characters)
                         .trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !text.isEmpty else { continue }
 
-                    if result.isFinal {
-                        self?.onFinalResult?(text)
-                    } else {
-                        self?.onPartialResult?(text)
+                    let isFinal = result.isFinal
+                    await MainActor.run { [weak self] in
+                        guard let self else { return }
+                        if isFinal {
+                            self.onFinalResult?(text)
+                        } else {
+                            self.onPartialResult?(text)
+                        }
                     }
                 }
             } catch {
@@ -130,20 +146,31 @@ final class AppleSpeechChannel {
         }
     }
 
+    /// Thread-safe: convert + yield from the audio capture queue.
     func feed(_ buffer: AVAudioPCMBuffer) {
-        guard let analyzerFormat else { return }
-        let prepared = AudioFormatConverter.convert(buffer, to: analyzerFormat) ?? buffer
-        inputContinuation?.yield(AnalyzerInput(buffer: prepared))
+        stateLock.lock()
+        let format = analyzerFormat
+        let continuation = inputContinuation
+        stateLock.unlock()
+
+        guard let format, let continuation else { return }
+        let prepared = AudioFormatConverter.convert(buffer, to: format) ?? buffer
+        continuation.yield(AnalyzerInput(buffer: prepared))
     }
 
     func stop() async {
+        stateLock.lock()
         inputContinuation?.finish()
         inputContinuation = nil
-        try? await analyzer?.finalizeAndFinishThroughEndOfInput()
-        resultTask?.cancel()
+        let analyzer = self.analyzer
+        self.analyzer = nil
+        self.transcriber = nil
+        self.analyzerFormat = nil
+        let task = resultTask
         resultTask = nil
-        analyzer = nil
-        transcriber = nil
-        analyzerFormat = nil
+        stateLock.unlock()
+
+        try? await analyzer?.finalizeAndFinishThroughEndOfInput()
+        task?.cancel()
     }
 }

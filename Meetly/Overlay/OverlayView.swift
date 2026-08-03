@@ -17,6 +17,11 @@ struct OverlayView: View {
     @State private var isFollowingLive = true
     @State private var scrollDistanceFromBottom: CGFloat = 0
     @State private var measuredAnswerHeight: CGFloat = 0
+    @State private var preferredContentHeight = OverlayGlassStyle.clampContentHeight(
+        CGFloat(AppSettings.overlayContentHeight)
+    )
+    /// After a manual drag, keep the chosen height even if an answer would auto-grow.
+    @State private var suppressAnswerAutoGrow = false
 
     private static let liveSubtitleID = "live-subtitle"
     private static let activeAnswerID = "active-answer"
@@ -28,12 +33,13 @@ struct OverlayView: View {
             || sessionManager.activeQuestion != nil
     }
 
-    /// Listening / thinking stay compact; answers grow from that baseline.
+    /// User-resized baseline; answers can grow above it unless the user has dragged.
     private var scrollAreaHeight: CGFloat {
-        guard sessionManager.activeAnswer != nil else {
-            return OverlayGlassStyle.contentMaxHeightListening
+        let preferred = OverlayGlassStyle.clampContentHeight(preferredContentHeight)
+        guard sessionManager.activeAnswer != nil, !suppressAnswerAutoGrow else {
+            return preferred
         }
-        return OverlayGlassStyle.answerContentHeight(measured: measuredAnswerHeight)
+        return max(preferred, OverlayGlassStyle.answerContentHeight(measured: measuredAnswerHeight))
     }
 
     private var isFolded: Bool {
@@ -57,8 +63,6 @@ struct OverlayView: View {
             idleContent
         }
         .frame(width: OverlayGlassStyle.panelWidth)
-        // Same layout contract as the meeting overlay: ideal height, glass
-        // hugging the content, pinned to the window's top edge.
         .fixedSize(horizontal: false, vertical: true)
         .overlayGlassPanel()
         .shadow(color: .black.opacity(0.12), radius: 16, y: 6)
@@ -84,6 +88,9 @@ struct OverlayView: View {
         .padding(.horizontal, 12)
         .padding(.top, 10)
         .padding(.bottom, 8)
+        .background {
+            OverlayWindowDragRegion()
+        }
     }
 
     private var idleContent: some View {
@@ -144,19 +151,29 @@ struct OverlayView: View {
                     Task { await sessionManager.askQuestion(question, images: images) }
                 }
                 .layoutPriority(1)
+
+                if !isFolded {
+                    OverlayResizeHandle(
+                        currentHeight: { scrollAreaHeight },
+                        onHeightChange: { newHeight in
+                            suppressAnswerAutoGrow = true
+                            preferredContentHeight = newHeight
+                            AppSettings.overlayContentHeight = Double(newHeight)
+                        }
+                    )
+                    .frame(maxWidth: .infinity)
+                    .frame(height: OverlayGlassStyle.resizeHandleHeight)
+                    .contentShape(Rectangle())
+                }
             }
-            // SwiftUI animates the fold/expand; the window frame only snaps
-            // once the animation settles (see OverlayPanelController).
             .frame(maxHeight: isFolded ? 0 : nil, alignment: .top)
             .clipped()
             .allowsHitTesting(!isFolded)
         }
         .frame(width: OverlayGlassStyle.panelWidth, alignment: .top)
-        // Keep the panel at its ideal height (never stretched by the window)...
         .fixedSize(horizontal: false, vertical: true)
         .overlayGlassPanel()
         .shadow(color: .black.opacity(0.12), radius: 16, y: 6)
-        // ...and pinned to the window's top edge so fold shrinks upward.
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .onAppear {
             OverlayPanelController.shared.setImagePasteHandler { [sessionManager] in
@@ -172,6 +189,11 @@ struct OverlayView: View {
             if answer == nil {
                 measuredAnswerHeight = 0
             }
+            // New or cleared answer: restore persisted size and allow auto-grow again.
+            suppressAnswerAutoGrow = false
+            preferredContentHeight = OverlayGlassStyle.clampContentHeight(
+                CGFloat(AppSettings.overlayContentHeight)
+            )
         }
         .animation(OverlayGlassStyle.resizeAnimation, value: isFolded)
         .animation(OverlayGlassStyle.resizeAnimation, value: hasQuestionContext)
@@ -280,7 +302,7 @@ struct OverlayView: View {
                             .font(.body.weight(.medium))
                             .foregroundStyle(.primary.opacity(sessionManager.isLiveSubtitlePartial ? 0.75 : 1))
                             .multilineTextAlignment(.leading)
-                            .animation(.easeOut(duration: 0.15), value: sessionManager.liveSubtitle)
+                            .transaction { $0.animation = nil }
                     }
                     .id(liveSubtitleID)
                 } else if sessionManager.activeAnswer == nil {

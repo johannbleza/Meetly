@@ -8,6 +8,7 @@ struct SettingsView: View {
     @State private var geminiWebSearchEnabled = AppSettings.geminiWebSearchEnabled
     @State private var overlayOpacity = AppSettings.overlayOpacity
     @State private var hideFromScreenShare = AppSettings.hideFromScreenShare
+    @State private var captureMeetingAudioByDefault = AppSettings.captureMeetingAudioByDefault
     @State private var apiKeyDraft = ""
     @State private var hasStoredAPIKey = GeminiConfig.hasAPIKey
     @State private var statusMessage: String?
@@ -44,6 +45,15 @@ struct SettingsView: View {
 
             Section("Meeting Audio") {
                 Label("Microphone transcription is always on", systemImage: "mic.fill")
+                    .foregroundStyle(.secondary)
+
+                Toggle("Capture meeting audio by default", isOn: $captureMeetingAudioByDefault)
+                    .onChange(of: captureMeetingAudioByDefault) { _, newValue in
+                        AppSettings.captureMeetingAudioByDefault = newValue
+                    }
+
+                Text("When enabled, Meetly asks you to pick a display at meeting start so other participants are labeled separately from you. This uses the macOS share picker, not the Screen Recording permission dialog.")
+                    .font(.caption)
                     .foregroundStyle(.secondary)
 
                 Text(ScreenCapturePermission.troubleshootingMessage)

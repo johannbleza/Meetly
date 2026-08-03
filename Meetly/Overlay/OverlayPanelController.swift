@@ -80,6 +80,7 @@ final class OverlayPanelController {
 
         let contentView = OverlayView(sessionManager: sessionManager)
             .frame(width: OverlayGlassStyle.panelWidth)
+            .preferredColorScheme(.dark)
 
         let hostingView = NSHostingView(rootView: contentView)
         hostingView.translatesAutoresizingMaskIntoConstraints = false
@@ -102,11 +103,14 @@ final class OverlayPanelController {
         panel.becomesKeyOnlyIfNeeded = true
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        panel.isMovableByWindowBackground = true
+        // Disabled so the bottom resize handle can receive drags. Move via the toolbar drag region.
+        panel.isMovableByWindowBackground = false
         panel.backgroundColor = .clear
         panel.isOpaque = false
         panel.hasShadow = false
         panel.hidesOnDeactivate = false
+        // Keep liquid glass on the dark variant regardless of system appearance.
+        panel.appearance = NSAppearance(named: .darkAqua)
         let rootView = NSView()
         rootView.wantsLayer = true
         rootView.clipsToBounds = true

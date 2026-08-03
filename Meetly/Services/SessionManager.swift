@@ -41,6 +41,7 @@ final class SessionManager {
     var requestedHomePanel: HomePanel?
 
     private let audioCaptureService = AudioCaptureService()
+    private let audioSourceRouter = AudioSourceRouter()
     private let transcriptionService = LiveTranscriptionService()
     private let aiService = AIService()
 
@@ -142,6 +143,7 @@ final class SessionManager {
         warningMessage = nil
         needsSystemAudioPicker = false
         isSystemAudioEnabled = false
+        audioSourceRouter.reset()
         chatMessages = []
         liveSubtitle = ""
         liveSubtitleSpeaker = nil
@@ -189,31 +191,25 @@ final class SessionManager {
             try await transcriptionService.start()
 
             transcriptionService.onPartialResult = { [weak self] text, speaker in
-                Task { @MainActor in
-                    self?.handlePartialTranscript(text: text, speaker: speaker)
-                }
+                self?.handlePartialTranscript(text: text, speaker: speaker)
             }
 
             transcriptionService.onFinalResult = { [weak self] text, speaker in
-                Task { @MainActor in
-                    self?.handleFinalTranscript(text: text, speaker: speaker)
-                }
+                self?.handleFinalTranscript(text: text, speaker: speaker)
             }
 
-            audioCaptureService.onMicBuffer = { [weak self] buffer in
-                Task { @MainActor in
-                    self?.transcriptionService.feedMicBuffer(buffer)
-                }
+            transcriptionService.onSystemChannelError = { [weak self] error in
+                self?.handleSystemChannelError(error)
             }
 
-            audioCaptureService.onSystemBuffer = { [weak self] buffer in
-                Task { @MainActor in
-                    self?.transcriptionService.feedSystemBuffer(buffer)
-                }
-            }
+            wireAudioRouting()
 
             if let warning = try await audioCaptureService.start() {
                 warningMessage = warning
+            }
+
+            if AppSettings.captureMeetingAudioByDefault {
+                await enableSystemAudioAtStart()
             }
         } catch {
             errorMessage = error.localizedDescription
@@ -223,16 +219,55 @@ final class SessionManager {
 
     func enableSystemAudio() async {
         guard isMeetingActive, state == .recording else { return }
+        await enableSystemAudioAtStart(forcePicker: true)
+    }
 
-        if let warning = await audioCaptureService.enableSystemAudioViaPicker() {
+    private func enableSystemAudioAtStart(forcePicker: Bool = false) async {
+        let warning: String?
+        if forcePicker {
+            warning = await audioCaptureService.enableSystemAudioViaPicker()
+        } else {
+            warning = await audioCaptureService.startSystemAudioIfPossible()
+        }
+
+        if let warning {
             warningMessage = warning
             needsSystemAudioPicker = true
             isSystemAudioEnabled = false
+            audioSourceRouter.isSystemAudioEnabled = false
         } else {
             warningMessage = nil
             needsSystemAudioPicker = false
             isSystemAudioEnabled = true
+            audioSourceRouter.isSystemAudioEnabled = true
         }
+    }
+
+    private func wireAudioRouting() {
+        let router = audioSourceRouter
+        let transcription = transcriptionService
+
+        router.onMicBuffer = { buffer in
+            transcription.feedMicBuffer(buffer)
+        }
+        router.onSystemBuffer = { buffer in
+            transcription.feedSystemBuffer(buffer)
+        }
+
+        // Single hop: capture thread → router → STT feed (no MainActor marshal for PCM).
+        audioCaptureService.onMicBuffer = { buffer in
+            router.processMicBuffer(buffer)
+        }
+        audioCaptureService.onSystemBuffer = { buffer in
+            router.processSystemBuffer(buffer)
+        }
+    }
+
+    private func handleSystemChannelError(_ error: Error) {
+        warningMessage = "Meeting audio transcription failed: \(error.localizedDescription)"
+        isSystemAudioEnabled = false
+        audioSourceRouter.isSystemAudioEnabled = false
+        needsSystemAudioPicker = true
     }
 
     func pauseMeeting() async {
@@ -254,6 +289,13 @@ final class SessionManager {
             try await transcriptionService.resume()
             if let warning = try await audioCaptureService.resume() {
                 warningMessage = warning
+                if audioCaptureService.isSystemAudioRunning {
+                    isSystemAudioEnabled = true
+                    audioSourceRouter.isSystemAudioEnabled = true
+                } else if isSystemAudioEnabled {
+                    isSystemAudioEnabled = false
+                    audioSourceRouter.isSystemAudioEnabled = false
+                }
             }
             if let pauseStartedAt {
                 accumulatedPausedDuration += Date().timeIntervalSince(pauseStartedAt)
@@ -285,6 +327,7 @@ final class SessionManager {
         }
 
         finalizePartialMessages()
+        audioSourceRouter.reset()
         state = .idle
         currentSession = nil
         sessionStartedAt = nil

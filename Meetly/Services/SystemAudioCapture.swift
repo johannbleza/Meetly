@@ -9,7 +9,8 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate, SCCo
     private var pickerContinuation: CheckedContinuation<Void, Error>?
     private var isObservingPicker = false
 
-    var onBuffer: ((AVAudioPCMBuffer) -> Void)?
+    /// Invoked on the ScreenCaptureKit sample-handler queue — keep handlers off the main actor.
+    nonisolated(unsafe) var onBuffer: ((AVAudioPCMBuffer) -> Void)?
 
     func start() async throws {
         guard !isRunning else { return }
@@ -144,32 +145,30 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate, SCCo
         guard type == .audio else { return }
         guard CMSampleBufferDataIsReady(sampleBuffer) else { return }
 
-        Task { @MainActor in
-            guard let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer),
-                  let streamDescription = CMAudioFormatDescriptionGetStreamBasicDescription(formatDescription),
-                  let sourceFormat = AVAudioFormat(streamDescription: streamDescription) else {
-                return
-            }
-
-            let frameCount = CMSampleBufferGetNumSamples(sampleBuffer)
-            guard frameCount > 0,
-                  let sourceBuffer = AVAudioPCMBuffer(
-                    pcmFormat: sourceFormat,
-                    frameCapacity: AVAudioFrameCount(frameCount)
-                  ) else {
-                return
-            }
-
-            sourceBuffer.frameLength = AVAudioFrameCount(frameCount)
-            let copyStatus = CMSampleBufferCopyPCMDataIntoAudioBufferList(
-                sampleBuffer,
-                at: 0,
-                frameCount: Int32(frameCount),
-                into: sourceBuffer.mutableAudioBufferList
-            )
-            guard copyStatus == noErr else { return }
-            onBuffer?(sourceBuffer)
+        guard let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer),
+              let streamDescription = CMAudioFormatDescriptionGetStreamBasicDescription(formatDescription),
+              let sourceFormat = AVAudioFormat(streamDescription: streamDescription) else {
+            return
         }
+
+        let frameCount = CMSampleBufferGetNumSamples(sampleBuffer)
+        guard frameCount > 0,
+              let sourceBuffer = AVAudioPCMBuffer(
+                pcmFormat: sourceFormat,
+                frameCapacity: AVAudioFrameCount(frameCount)
+              ) else {
+            return
+        }
+
+        sourceBuffer.frameLength = AVAudioFrameCount(frameCount)
+        let copyStatus = CMSampleBufferCopyPCMDataIntoAudioBufferList(
+            sampleBuffer,
+            at: 0,
+            frameCount: Int32(frameCount),
+            into: sourceBuffer.mutableAudioBufferList
+        )
+        guard copyStatus == noErr else { return }
+        onBuffer?(sourceBuffer)
     }
 
     enum CaptureError: LocalizedError {
