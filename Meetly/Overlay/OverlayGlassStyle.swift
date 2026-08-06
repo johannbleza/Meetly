@@ -37,17 +37,20 @@ enum OverlayGlassStyle {
         )
     }
 
+    /// Fixed dark fill so the panel stays consistent on light and colorful desktops.
+    /// Opacity keeps a hint of translucency without Liquid Glass sampling the wallpaper.
+    static let panelFill = Color(red: 0.09, green: 0.09, blue: 0.10).opacity(0.88)
+
     @ViewBuilder
     static func background(cornerRadius: CGFloat = cornerRadius) -> some View {
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-            .fill(.clear)
-            .glassEffect(.regular, in: .rect(cornerRadius: cornerRadius))
+            .fill(panelFill)
     }
 
     @ViewBuilder
     static func stroke(cornerRadius: CGFloat = cornerRadius) -> some View {
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-            .strokeBorder(.white.opacity(0.22), lineWidth: 0.5)
+            .strokeBorder(.white.opacity(0.16), lineWidth: 0.5)
     }
 }
 

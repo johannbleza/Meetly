@@ -27,7 +27,7 @@ final class OverlayPanelController {
     private var presentation: OverlayPresentation = .hidden
     private var onImagePaste: (() -> Void)?
 
-    /// The window is a fixed-size transparent canvas; SwiftUI draws the glass
+    /// The window is a fixed-size transparent canvas; SwiftUI draws the dark
     /// panel (at whatever size the content needs) top-anchored inside it. The
     /// window itself never resizes, so the UI can never be clipped by it.
     private static let canvasHeight: CGFloat = OverlayGlassStyle.panelMaxHeightWithPendingImage
@@ -109,7 +109,7 @@ final class OverlayPanelController {
         panel.isOpaque = false
         panel.hasShadow = false
         panel.hidesOnDeactivate = false
-        // Keep liquid glass on the dark variant regardless of system appearance.
+        // Keep the overlay on the dark variant regardless of system appearance.
         panel.appearance = NSAppearance(named: .darkAqua)
         let rootView = NSView()
         rootView.wantsLayer = true

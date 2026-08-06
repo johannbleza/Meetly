@@ -11,6 +11,7 @@ struct SessionDetailView: View {
     @Environment(\.modelContext) private var modelContext
     @State private var qaController: MeetingQAController?
     @State private var actionItemsController: ActionItemsController?
+    @State private var summaryController: MeetingSummaryController?
     @State private var questionText = ""
 
     var body: some View {
@@ -20,9 +21,7 @@ struct SessionDetailView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
-                    if let summary = session.summary {
-                        summarySection(summary)
-                    }
+                    summaryContent
                     askAISection
                     transcriptSection
                 }
@@ -41,14 +40,18 @@ struct SessionDetailView: View {
         }
         .appPanelBackground(AppTheme.bgPrimary)
         .onAppear {
-            qaController = MeetingQAController(session: session)
-            actionItemsController = ActionItemsController(session: session, modelContext: modelContext)
+            configureControllers()
         }
         .onChange(of: session.id) { _, _ in
-            qaController = MeetingQAController(session: session)
-            actionItemsController = ActionItemsController(session: session, modelContext: modelContext)
+            configureControllers()
             questionText = ""
         }
+    }
+
+    private func configureControllers() {
+        qaController = MeetingQAController(session: session)
+        actionItemsController = ActionItemsController(session: session, modelContext: modelContext)
+        summaryController = MeetingSummaryController(session: session, modelContext: modelContext)
     }
 
     private var askAISection: some View {
@@ -142,12 +145,34 @@ struct SessionDetailView: View {
     }
 
     @ViewBuilder
+    private var summaryContent: some View {
+        if let summary = session.summary {
+            summarySection(summary)
+        } else {
+            sectionBlock(title: "Summary") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("No summary yet. Generate one from the meeting transcript.")
+                        .font(.appCaption)
+                        .foregroundStyle(AppTheme.textSecondary)
+                    regenerateSummaryControls(hasSummary: false)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    @ViewBuilder
     private func summarySection(_ summary: MeetingSummary) -> some View {
         sectionBlock(title: "Summary") {
-            Text(summary.summaryText)
-                .font(.appBody)
-                .foregroundStyle(AppTheme.textPrimary)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 10) {
+                Text(summary.summaryText)
+                    .font(.appBody)
+                    .foregroundStyle(AppTheme.textPrimary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                regenerateSummaryControls(hasSummary: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
 
         if !summary.keyPoints.isEmpty {
@@ -168,6 +193,36 @@ struct SessionDetailView: View {
         }
 
         actionItemsSection(summary)
+    }
+
+    @ViewBuilder
+    private func regenerateSummaryControls(hasSummary: Bool) -> some View {
+        if let summaryController {
+            if let errorMessage = summaryController.errorMessage {
+                Text(errorMessage)
+                    .font(.appCaption)
+                    .foregroundStyle(AppTheme.danger)
+            }
+
+            Button {
+                Task { await summaryController.generate() }
+            } label: {
+                HStack(spacing: 6) {
+                    if summaryController.isGenerating {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: "sparkles")
+                    }
+                    Text(hasSummary ? "Regenerate Summary" : "Generate Summary")
+                }
+                .font(.appCaption.weight(.medium))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(AppTheme.accent)
+            .disabled(!summaryController.canGenerate)
+            .opacity(summaryController.canGenerate ? 1 : 0.5)
+        }
     }
 
     @ViewBuilder
