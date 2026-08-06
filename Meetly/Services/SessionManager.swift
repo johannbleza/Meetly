@@ -34,6 +34,7 @@ final class SessionManager {
     private(set) var warningMessage: String?
     private(set) var needsSystemAudioPicker = false
     private(set) var isSystemAudioEnabled = false
+    private(set) var isMicrophoneMuted = false
     private(set) var sessionStartedAt: Date?
     private(set) var overlayPresentation: OverlayPresentation = .hidden
     private(set) var aiProviderSelection: AIProvider = AppSettings.aiProvider
@@ -143,6 +144,7 @@ final class SessionManager {
         warningMessage = nil
         needsSystemAudioPicker = false
         isSystemAudioEnabled = false
+        isMicrophoneMuted = false
         audioSourceRouter.reset()
         chatMessages = []
         liveSubtitle = ""
@@ -270,6 +272,23 @@ final class SessionManager {
         needsSystemAudioPicker = true
     }
 
+    func toggleMicrophoneMute() {
+        guard isMeetingActive else { return }
+        setMicrophoneMuted(!isMicrophoneMuted)
+    }
+
+    func setMicrophoneMuted(_ muted: Bool) {
+        guard isMeetingActive else { return }
+        isMicrophoneMuted = muted
+        audioCaptureService.setMicrophoneMuted(muted)
+        if muted {
+            finalizePartialMessage(for: .me)
+            if liveSubtitleSpeaker == .me {
+                clearLiveSubtitle()
+            }
+        }
+    }
+
     func pauseMeeting() async {
         guard state == .recording else { return }
 
@@ -328,6 +347,7 @@ final class SessionManager {
 
         finalizePartialMessages()
         audioSourceRouter.reset()
+        isMicrophoneMuted = false
         state = .idle
         currentSession = nil
         sessionStartedAt = nil
@@ -528,6 +548,14 @@ final class SessionManager {
             chatMessages[index].isPartial = false
         }
         partialMessageIDs.removeAll()
+    }
+
+    private func finalizePartialMessage(for speaker: Speaker) {
+        if let id = partialMessageIDs[speaker],
+           let index = chatMessages.firstIndex(where: { $0.id == id }) {
+            chatMessages[index].isPartial = false
+        }
+        partialMessageIDs[speaker] = nil
     }
 
     private func transcriptContext() -> String {

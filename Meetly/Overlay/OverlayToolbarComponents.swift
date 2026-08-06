@@ -69,6 +69,7 @@ struct OverlayMeetingToolbar: View {
             OverlayToolbarDivider()
 
             HStack(spacing: 2) {
+                OverlayMuteMicButton(sessionManager: sessionManager)
                 OverlayPauseResumeButton(sessionManager: sessionManager)
                 OverlayToolbarIconButton(systemImage: "stop.fill", help: "Stop meeting", tint: .red) {
                     Task { await sessionManager.stopMeeting() }
@@ -127,6 +128,20 @@ struct OverlayStatusIndicator: View {
             "Paused"
         default:
             ""
+        }
+    }
+}
+
+struct OverlayMuteMicButton: View {
+    var sessionManager: SessionManager
+
+    var body: some View {
+        OverlayToolbarIconButton(
+            systemImage: sessionManager.isMicrophoneMuted ? "mic.slash.fill" : "mic.fill",
+            help: sessionManager.isMicrophoneMuted ? "Unmute microphone" : "Mute microphone",
+            tint: sessionManager.isMicrophoneMuted ? .orange : .primary
+        ) {
+            sessionManager.toggleMicrophoneMute()
         }
     }
 }

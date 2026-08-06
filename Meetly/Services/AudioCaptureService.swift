@@ -25,9 +25,18 @@ final class AudioCaptureService {
 
     private(set) var isSystemAudioRunning = false
 
+    var isMicrophoneMuted: Bool {
+        microphoneCapture.isMuted
+    }
+
+    func setMicrophoneMuted(_ muted: Bool) {
+        microphoneCapture.setMuted(muted)
+    }
+
     /// Starts microphone capture only. System/meeting audio is opt-in via `enableSystemAudioViaPicker()`.
     func start() async throws -> String? {
         wireCaptureCallbacks()
+        microphoneCapture.setMuted(false)
         try microphoneCapture.start()
         isSystemAudioRunning = false
         return nil
@@ -97,6 +106,7 @@ final class AudioCaptureService {
 
     func stop() async {
         microphoneCapture.stop()
+        microphoneCapture.setMuted(false)
         await systemAudioCapture.stop()
         isSystemAudioRunning = false
     }
