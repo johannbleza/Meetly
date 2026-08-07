@@ -232,7 +232,7 @@ struct OverlayView: View {
 
     private func contentStack(liveSubtitleID: String) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            if sessionManager.activeAnswer == nil {
+            if sessionManager.activeAnswer == nil, !sessionManager.isAwaitingAnswer {
                 if !finalizedTranscriptMessages.isEmpty {
                     VStack(alignment: .leading, spacing: 6) {
                         ForEach(finalizedTranscriptMessages) { message in
@@ -257,7 +257,18 @@ struct OverlayView: View {
             }
 
             Group {
-                if let answer = sessionManager.activeAnswer {
+                if sessionManager.isAwaitingAnswer {
+                    HStack(spacing: 10) {
+                        ProgressView()
+                            .controlSize(.regular)
+                        Text("Thinking…")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.vertical, 4)
+                    .id(Self.activeAnswerID)
+                } else if let answer = sessionManager.activeAnswer {
                     HStack(alignment: .top, spacing: 8) {
                         Text(answer)
                             .font(.body)
@@ -289,7 +300,7 @@ struct OverlayView: View {
 
                 if !sessionManager.liveSubtitle.isEmpty, sessionManager.liveSubtitle != "…" {
                     VStack(alignment: .leading, spacing: 6) {
-                        if sessionManager.activeAnswer != nil {
+                        if sessionManager.activeAnswer != nil || sessionManager.isAwaitingAnswer {
                             Divider().opacity(0.2)
                                 .padding(.vertical, 4)
                         }
@@ -305,16 +316,8 @@ struct OverlayView: View {
                             .transaction { $0.animation = nil }
                     }
                     .id(liveSubtitleID)
-                } else if sessionManager.activeAnswer == nil {
-                    if sessionManager.isAwaitingAnswer {
-                        HStack(spacing: 8) {
-                            ProgressView().controlSize(.small)
-                            Text("Thinking…")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                        }
-                        .id(liveSubtitleID)
-                    } else if sessionManager.state == .paused {
+                } else if sessionManager.activeAnswer == nil, !sessionManager.isAwaitingAnswer {
+                    if sessionManager.state == .paused {
                         Text("Paused")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
@@ -362,10 +365,15 @@ struct OverlayView: View {
             .onChange(of: finalizedTranscriptMessages.count) { _, _ in
                 scrollToLiveIfFollowing(proxy: proxy)
             }
+            .onChange(of: sessionManager.isAwaitingAnswer) { _, awaiting in
+                if awaiting {
+                    scrollToAnswer(proxy: proxy)
+                }
+            }
             .onChange(of: sessionManager.activeAnswer) { _, answer in
                 if answer != nil {
                     scrollToAnswer(proxy: proxy)
-                } else {
+                } else if !sessionManager.isAwaitingAnswer {
                     resumeFollowingLive(proxy: proxy)
                 }
             }
@@ -433,9 +441,6 @@ struct OverlayView: View {
     private var actionRow: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                actionButton("Assist", icon: "sparkles") {
-                    Task { await sessionManager.askQuestion("How can I assist in this meeting right now?") }
-                }
                 actionButton("What to say", icon: "text.quote") {
                     Task { await sessionManager.askQuestion("What should I say next based on this conversation?") }
                 }
