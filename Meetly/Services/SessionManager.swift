@@ -184,9 +184,6 @@ final class SessionManager {
         sessionStartedAt = session.startedAt
         state = .recording
         overlayPresentation = .expanded
-        MainWindowController.shared.hideMainWindow()
-        OverlayPanelController.shared.show()
-        OverlayPanelController.shared.updateForPresentation(.expanded)
 
         do {
             try await transcriptionService.prepare()
@@ -210,9 +207,16 @@ final class SessionManager {
                 warningMessage = warning
             }
 
+            // Present the share picker before hiding the main window. SCContentSharingPicker
+            // needs an active key window; orderOut + overlay orderFrontRegardless made the
+            // picker fail/cancel silently when starting from the main window.
             if AppSettings.captureMeetingAudioByDefault {
                 await enableSystemAudioAtStart()
             }
+
+            MainWindowController.shared.hideMainWindow()
+            OverlayPanelController.shared.show()
+            OverlayPanelController.shared.updateForPresentation(.expanded)
         } catch {
             errorMessage = error.localizedDescription
             await stopMeeting(saveSummary: false)
@@ -225,6 +229,8 @@ final class SessionManager {
     }
 
     private func enableSystemAudioAtStart(forcePicker: Bool = false) async {
+        prepareForContentSharingPicker()
+
         let warning: String?
         if forcePicker {
             warning = await audioCaptureService.enableSystemAudioViaPicker()
@@ -242,6 +248,19 @@ final class SessionManager {
             needsSystemAudioPicker = false
             isSystemAudioEnabled = true
             audioSourceRouter.isSystemAudioEnabled = true
+        }
+    }
+
+    /// Ensures the app is active and has a key window so `SCContentSharingPicker` can present.
+    private func prepareForContentSharingPicker() {
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        if NSApp.keyWindow == nil {
+            if MainWindowController.shared.isMainWindowVisible {
+                MainWindowController.shared.showMainWindow()
+            } else {
+                OverlayPanelController.shared.show()
+                OverlayPanelController.shared.activateForInput()
+            }
         }
     }
 
@@ -306,6 +325,7 @@ final class SessionManager {
 
         do {
             try await transcriptionService.resume()
+            prepareForContentSharingPicker()
             if let warning = try await audioCaptureService.resume() {
                 warningMessage = warning
                 if audioCaptureService.isSystemAudioRunning {
