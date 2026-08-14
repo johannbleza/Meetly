@@ -5,6 +5,7 @@ struct OverlaySettingsView: View {
     @State private var aiProvider = AppSettings.aiProvider
     @State private var overlayOpacity = AppSettings.overlayOpacity
     @State private var hideFromScreenShare = AppSettings.hideFromScreenShare
+    @State private var reduceSpeakerBleed = AppSettings.reduceSpeakerBleed
 
     var body: some View {
         Form {
@@ -32,6 +33,17 @@ struct OverlaySettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.orange)
                 }
+            }
+
+            Section("Meeting Audio") {
+                Toggle("Ignore speaker audio on the mic", isOn: $reduceSpeakerBleed)
+                    .onChange(of: reduceSpeakerBleed) { _, newValue in
+                        sessionManager.setReduceSpeakerBleed(newValue)
+                    }
+
+                Text("Stops meeting audio playing through speakers from being transcribed as you.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("Overlay") {

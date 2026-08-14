@@ -1,23 +1,37 @@
 import AVFoundation
 import Foundation
 
-enum AudioFormatConverter {
+nonisolated enum AudioFormatConverter {
     static func rmsEnergy(of buffer: AVAudioPCMBuffer) -> Float {
-        guard let channelData = buffer.floatChannelData else { return 0 }
         let frameLength = Int(buffer.frameLength)
-        guard frameLength > 0 else { return 0 }
-
-        var sum: Float = 0
         let channelCount = Int(buffer.format.channelCount)
-        for channel in 0..<channelCount {
-            let samples = channelData[channel]
-            for frame in 0..<frameLength {
-                let sample = samples[frame]
-                sum += sample * sample
+        guard frameLength > 0, channelCount > 0 else { return 0 }
+
+        if let channelData = buffer.floatChannelData {
+            var sum: Float = 0
+            for channel in 0..<channelCount {
+                let samples = channelData[channel]
+                for frame in 0..<frameLength {
+                    let sample = samples[frame]
+                    sum += sample * sample
+                }
             }
+            return sqrt(sum / Float(frameLength * channelCount))
         }
 
-        return sqrt(sum / Float(frameLength * channelCount))
+        if let channelData = buffer.int16ChannelData {
+            var sum: Float = 0
+            for channel in 0..<channelCount {
+                let samples = channelData[channel]
+                for frame in 0..<frameLength {
+                    let normalized = Float(samples[frame]) / Float(Int16.max)
+                    sum += normalized * normalized
+                }
+            }
+            return sqrt(sum / Float(frameLength * channelCount))
+        }
+
+        return 0
     }
 
     static func copy(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {

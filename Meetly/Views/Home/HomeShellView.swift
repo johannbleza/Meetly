@@ -126,7 +126,7 @@ struct HomeShellView: View {
     @ViewBuilder
     private var detailContent: some View {
         if selectedPanel == .settings {
-            SettingsView()
+            SettingsView(sessionManager: sessionManager)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .appPanelBackground(AppTheme.bgPrimary)
         } else if let selectedSession {

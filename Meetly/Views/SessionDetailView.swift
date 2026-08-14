@@ -13,17 +13,41 @@ struct SessionDetailView: View {
     @State private var actionItemsController: ActionItemsController?
     @State private var summaryController: MeetingSummaryController?
     @State private var questionText = ""
+    @State private var transcriptRows: [TranscriptRowModel] = []
+    @State private var loadedTranscriptSessionID: UUID?
 
     var body: some View {
         VStack(spacing: 0) {
-            detailHeader
+            SessionDetailHeader(
+                session: session,
+                onArchive: onArchive,
+                onUnarchive: onUnarchive,
+                onExport: onExport,
+                onDelete: onDelete
+            )
             AppDivider(axis: .horizontal)
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
-                    summaryContent
-                    askAISection
-                    transcriptSection
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    SessionSummarySection(session: session, summaryController: summaryController)
+                    SessionKeyPointsSection(session: session)
+                    SessionActionItemsSection(session: session, controller: actionItemsController)
+                    SessionAskAISection(qaController: qaController)
+
+                    AppSectionHeader(title: "Transcript")
+                        .padding(.bottom, 10)
+
+                    let rows = displayedTranscriptRows
+                    if rows.isEmpty {
+                        Text("No transcript captured.")
+                            .font(.appBody)
+                            .foregroundStyle(AppTheme.textSecondary)
+                    } else {
+                        ForEach(rows) { row in
+                            TranscriptRowView(row: row)
+                                .equatable()
+                        }
+                    }
                 }
                 .padding(24)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -41,11 +65,20 @@ struct SessionDetailView: View {
         .appPanelBackground(AppTheme.bgPrimary)
         .onAppear {
             configureControllers()
+            loadTranscriptRows()
         }
         .onChange(of: session.id) { _, _ in
             configureControllers()
             questionText = ""
+            loadTranscriptRows()
         }
+    }
+
+    private var displayedTranscriptRows: [TranscriptRowModel] {
+        if loadedTranscriptSessionID == session.id {
+            return transcriptRows
+        }
+        return Self.makeTranscriptRows(from: session)
     }
 
     private func configureControllers() {
@@ -54,39 +87,34 @@ struct SessionDetailView: View {
         summaryController = MeetingSummaryController(session: session, modelContext: modelContext)
     }
 
-    private var askAISection: some View {
-        sectionBlock(title: "Ask AI") {
-            VStack(alignment: .leading, spacing: 12) {
-                if let qaController {
-                    if !qaController.isAvailable {
-                        Text(qaController.availabilityMessage ?? "Configure AI in Settings to ask questions about this meeting.")
-                            .font(.appCaption)
-                            .foregroundStyle(AppTheme.textSecondary)
-                    } else if !qaController.hasContent {
-                        Text("This meeting has no transcript or summary to ask about yet.")
-                            .font(.appCaption)
-                            .foregroundStyle(AppTheme.textSecondary)
-                    } else if qaController.messages.isEmpty {
-                        Text("Ask a question about this meeting's transcript or summary.")
-                            .font(.appCaption)
-                            .foregroundStyle(AppTheme.textSecondary)
-                    }
-
-                    if !qaController.messages.isEmpty || qaController.isAwaitingAnswer {
-                        ChatMessageListView(
-                            messages: qaController.messages,
-                            isAwaitingAnswer: qaController.isAwaitingAnswer,
-                            style: .home,
-                            scrollable: false
-                        )
-                    }
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
+    private func loadTranscriptRows() {
+        transcriptRows = Self.makeTranscriptRows(from: session)
+        loadedTranscriptSessionID = session.id
     }
 
-    private var detailHeader: some View {
+    private static func makeTranscriptRows(from session: MeetingSession) -> [TranscriptRowModel] {
+        let segments = session.segments.sorted { $0.timestamp < $1.timestamp }
+        let lastID = segments.last?.persistentModelID
+        return segments.map { segment in
+            TranscriptRowModel(
+                id: segment.persistentModelID,
+                timestampText: segment.timestamp.formatted(date: .omitted, time: .standard),
+                speaker: segment.speaker,
+                text: segment.text,
+                showDivider: segment.persistentModelID != lastID
+            )
+        }
+    }
+}
+
+private struct SessionDetailHeader: View {
+    let session: MeetingSession
+    var onArchive: (() -> Void)?
+    var onUnarchive: (() -> Void)?
+    var onExport: (() -> Void)?
+    var onDelete: (() -> Void)?
+
+    var body: some View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 6) {
                 Text(session.displayTitle)
@@ -143,13 +171,25 @@ struct SessionDetailView: View {
         .padding(.vertical, 16)
         .background(AppTheme.bgSidebar)
     }
+}
 
-    @ViewBuilder
-    private var summaryContent: some View {
-        if let summary = session.summary {
-            summarySection(summary)
-        } else {
-            sectionBlock(title: "Summary") {
+private struct SessionSummarySection: View {
+    let session: MeetingSession
+    let summaryController: MeetingSummaryController?
+
+    var body: some View {
+        DetailSectionBlock(title: "Summary") {
+            if let summary = session.summary {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(summary.summaryText)
+                        .font(.appBody)
+                        .foregroundStyle(AppTheme.textPrimary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                    regenerateSummaryControls(hasSummary: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("No summary yet. Generate one from the meeting transcript.")
                         .font(.appCaption)
@@ -159,40 +199,7 @@ struct SessionDetailView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-    }
-
-    @ViewBuilder
-    private func summarySection(_ summary: MeetingSummary) -> some View {
-        sectionBlock(title: "Summary") {
-            VStack(alignment: .leading, spacing: 10) {
-                Text(summary.summaryText)
-                    .font(.appBody)
-                    .foregroundStyle(AppTheme.textPrimary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                regenerateSummaryControls(hasSummary: true)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-
-        if !summary.keyPoints.isEmpty {
-            sectionBlock(title: "Key Points") {
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(summary.keyPoints, id: \.self) { point in
-                        HStack(alignment: .top, spacing: 8) {
-                            Text("•")
-                                .foregroundStyle(AppTheme.accent)
-                            Text(point)
-                                .font(.appBody)
-                                .foregroundStyle(AppTheme.textPrimary)
-                        }
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
-
-        actionItemsSection(summary)
+        .padding(.bottom, 24)
     }
 
     @ViewBuilder
@@ -224,13 +231,41 @@ struct SessionDetailView: View {
             .opacity(summaryController.canGenerate ? 1 : 0.5)
         }
     }
+}
 
-    @ViewBuilder
-    private func actionItemsSection(_ summary: MeetingSummary) -> some View {
-        sectionBlock(title: "Action Items") {
+private struct SessionKeyPointsSection: View {
+    let session: MeetingSession
+
+    var body: some View {
+        if let keyPoints = session.summary?.keyPoints, !keyPoints.isEmpty {
+            DetailSectionBlock(title: "Key Points") {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(keyPoints, id: \.self) { point in
+                        HStack(alignment: .top, spacing: 8) {
+                            Text("•")
+                                .foregroundStyle(AppTheme.accent)
+                            Text(point)
+                                .font(.appBody)
+                                .foregroundStyle(AppTheme.textPrimary)
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(.bottom, 24)
+        }
+    }
+}
+
+private struct SessionActionItemsSection: View {
+    let session: MeetingSession
+    let controller: ActionItemsController?
+
+    var body: some View {
+        let items = session.summary?.sortedActionItems ?? []
+
+        DetailSectionBlock(title: "Action Items") {
             VStack(alignment: .leading, spacing: 10) {
-                let items = summary.sortedActionItems
-
                 if items.isEmpty {
                     Text("No action items yet. Generate them from the meeting summary and transcript.")
                         .font(.appCaption)
@@ -239,24 +274,24 @@ struct SessionDetailView: View {
                     VStack(alignment: .leading, spacing: 6) {
                         ForEach(items, id: \.persistentModelID) { item in
                             ActionItemRow(item: item) {
-                                actionItemsController?.toggleCompletion(for: item)
+                                controller?.toggleCompletion(for: item)
                             }
                         }
                     }
                 }
 
-                if let actionItemsController {
-                    if let errorMessage = actionItemsController.errorMessage {
+                if let controller {
+                    if let errorMessage = controller.errorMessage {
                         Text(errorMessage)
                             .font(.appCaption)
                             .foregroundStyle(AppTheme.danger)
                     }
 
                     Button {
-                        Task { await actionItemsController.generate() }
+                        Task { await controller.generate() }
                     } label: {
                         HStack(spacing: 6) {
-                            if actionItemsController.isGenerating {
+                            if controller.isGenerating {
                                 ProgressView()
                                     .controlSize(.small)
                             } else {
@@ -268,65 +303,102 @@ struct SessionDetailView: View {
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(AppTheme.accent)
-                    .disabled(!actionItemsController.canGenerate)
-                    .opacity(actionItemsController.canGenerate ? 1 : 0.5)
+                    .disabled(!controller.canGenerate)
+                    .opacity(controller.canGenerate ? 1 : 0.5)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .padding(.bottom, 24)
     }
+}
 
-    private var transcriptSection: some View {
-        sectionBlock(title: "Transcript") {
-            if session.segments.isEmpty {
-                Text("No transcript captured.")
-                    .font(.appBody)
-                    .foregroundStyle(AppTheme.textSecondary)
-            } else {
-                VStack(alignment: .leading, spacing: 0) {
-                    ForEach(sortedSegments, id: \.persistentModelID) { segment in
-                        transcriptRow(segment)
-                        if segment.persistentModelID != sortedSegments.last?.persistentModelID {
-                            AppDivider(axis: .horizontal)
-                                .padding(.vertical, 8)
-                        }
+private struct SessionAskAISection: View {
+    let qaController: MeetingQAController?
+
+    var body: some View {
+        DetailSectionBlock(title: "Ask AI") {
+            VStack(alignment: .leading, spacing: 12) {
+                if let qaController {
+                    if !qaController.isAvailable {
+                        Text(qaController.availabilityMessage ?? "Configure AI in Settings to ask questions about this meeting.")
+                            .font(.appCaption)
+                            .foregroundStyle(AppTheme.textSecondary)
+                    } else if !qaController.hasContent {
+                        Text("This meeting has no transcript or summary to ask about yet.")
+                            .font(.appCaption)
+                            .foregroundStyle(AppTheme.textSecondary)
+                    } else if qaController.messages.isEmpty {
+                        Text("Ask a question about this meeting's transcript or summary.")
+                            .font(.appCaption)
+                            .foregroundStyle(AppTheme.textSecondary)
                     }
+
+                    if !qaController.messages.isEmpty || qaController.isAwaitingAnswer {
+                        ChatMessageListView(
+                            messages: qaController.messages,
+                            isAwaitingAnswer: qaController.isAwaitingAnswer,
+                            style: .home,
+                            scrollable: false
+                        )
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.bottom, 24)
+    }
+}
+
+private struct DetailSectionBlock<Content: View>: View {
+    let title: String
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            AppSectionHeader(title: title)
+            content
+        }
+    }
+}
+
+private struct TranscriptRowModel: Identifiable, Equatable {
+    let id: PersistentIdentifier
+    let timestampText: String
+    let speaker: Speaker
+    let text: String
+    let showDivider: Bool
+}
+
+private struct TranscriptRowView: View, Equatable {
+    let row: TranscriptRowModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .top, spacing: 12) {
+                Text(row.timestampText)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(AppTheme.textSecondary)
+                    .frame(width: 96, alignment: .leading)
+                    .fixedSize(horizontal: true, vertical: false)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(row.speaker.label)
+                        .font(.appCaption.weight(.semibold))
+                        .foregroundStyle(row.speaker == .me ? AppTheme.accent : AppTheme.textSecondary)
+                    Text(row.text)
+                        .font(.appBody)
+                        .foregroundStyle(AppTheme.textPrimary)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-        }
-    }
+            .padding(.vertical, 4)
 
-    private func transcriptRow(_ segment: TranscriptSegment) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            Text(segment.timestamp.formatted(date: .omitted, time: .standard))
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundStyle(AppTheme.textSecondary)
-                .frame(width: 96, alignment: .leading)
-                .fixedSize(horizontal: true, vertical: false)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(segment.speaker.label)
-                    .font(.appCaption.weight(.semibold))
-                    .foregroundStyle(segment.speaker == .me ? AppTheme.accent : AppTheme.textSecondary)
-                Text(segment.text)
-                    .font(.appBody)
-                    .foregroundStyle(AppTheme.textPrimary)
+            if row.showDivider {
+                AppDivider(axis: .horizontal)
+                    .padding(.vertical, 8)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(.vertical, 4)
-    }
-
-    private func sectionBlock<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            AppSectionHeader(title: title)
-            content()
-        }
-    }
-
-    private var sortedSegments: [TranscriptSegment] {
-        session.segments.sorted { $0.timestamp < $1.timestamp }
     }
 }
 

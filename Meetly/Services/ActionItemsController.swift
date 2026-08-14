@@ -80,6 +80,8 @@ final class ActionItemsController {
 
     func toggleCompletion(for item: ActionItem) {
         item.isCompleted.toggle()
-        try? modelContext.save()
+        // Persist after the current turn so the checkbox can flip without
+        // blocking on a full SwiftData save of a large meeting store.
+        Task { try? modelContext.save() }
     }
 }

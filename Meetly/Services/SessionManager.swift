@@ -51,8 +51,17 @@ final class SessionManager {
     private var lastFinalTranscriptAt: [Speaker: Date] = [:]
     private var pausedAt: Date?
     private var accumulatedPausedDuration: TimeInterval = 0
+    private var transcriptBleedFilter = TranscriptBleedFilter()
+    private var recentMeFinals: [TrackedMeTranscript] = []
 
     private let transcriptMergePauseThreshold: TimeInterval = 3
+    private let micBleedRetractWindow: TimeInterval = 8
+
+    private struct TrackedMeTranscript {
+        let text: String
+        let date: Date
+        let segment: TranscriptSegment
+    }
 
     var isMeetingActive: Bool {
         state == .recording || state == .paused
@@ -82,6 +91,11 @@ final class SessionManager {
     func setAIProvider(_ provider: AIProvider) {
         aiProviderSelection = provider
         AppSettings.aiProvider = provider
+    }
+
+    func setReduceSpeakerBleed(_ enabled: Bool) {
+        AppSettings.reduceSpeakerBleed = enabled
+        audioSourceRouter.isEchoSuppressionEnabled = enabled
     }
 
     var aiAvailabilityMessage: String? {
@@ -146,6 +160,7 @@ final class SessionManager {
         isSystemAudioEnabled = false
         isMicrophoneMuted = false
         audioSourceRouter.reset()
+        audioSourceRouter.isEchoSuppressionEnabled = AppSettings.reduceSpeakerBleed
         chatMessages = []
         liveSubtitle = ""
         liveSubtitleSpeaker = nil
@@ -156,6 +171,8 @@ final class SessionManager {
         activeAnswer = nil
         partialMessageIDs.removeAll()
         lastFinalTranscriptAt.removeAll()
+        transcriptBleedFilter.reset()
+        recentMeFinals.removeAll()
         pausedAt = nil
         accumulatedPausedDuration = 0
 
@@ -367,6 +384,8 @@ final class SessionManager {
 
         finalizePartialMessages()
         audioSourceRouter.reset()
+        transcriptBleedFilter.reset()
+        recentMeFinals.removeAll()
         isMicrophoneMuted = false
         state = .idle
         currentSession = nil
@@ -459,6 +478,16 @@ final class SessionManager {
             return
         }
 
+        if speaker == .other {
+            transcriptBleedFilter.recordOtherPartial(text)
+            if shouldFilterMicBleed, transcriptBleedFilter.looksLikeBleed(currentMicPartialText) {
+                discardPartialMicTranscript()
+            }
+        } else if shouldFilterMicBleed, transcriptBleedFilter.looksLikeBleed(text) {
+            discardPartialMicTranscript()
+            return
+        }
+
         liveSubtitle = text
         liveSubtitleSpeaker = sender
         isLiveSubtitlePartial = true
@@ -482,6 +511,19 @@ final class SessionManager {
     private func handleFinalTranscript(text: String, speaker: Speaker) {
         guard let currentSession, let modelContext else { return }
 
+        if speaker == .other {
+            transcriptBleedFilter.recordOtherFinal(text)
+            if shouldFilterMicBleed {
+                retractMicBleed(matching: text)
+                if transcriptBleedFilter.looksLikeBleed(currentMicPartialText) {
+                    discardPartialMicTranscript()
+                }
+            }
+        } else if shouldFilterMicBleed, transcriptBleedFilter.looksLikeBleed(text) {
+            discardPartialMicTranscript()
+            return
+        }
+
         let sender: ChatMessageSender = speaker == .me ? .me : .other
         let merging = shouldMergeTranscript(with: speaker)
 
@@ -504,6 +546,81 @@ final class SessionManager {
         currentSession.segments.append(segment)
         modelContext.insert(segment)
         try? modelContext.save()
+
+        if speaker == .me {
+            recentMeFinals.append(TrackedMeTranscript(text: text, date: .now, segment: segment))
+            pruneRecentMeFinals()
+        }
+    }
+
+    private var shouldFilterMicBleed: Bool {
+        AppSettings.reduceSpeakerBleed && isSystemAudioEnabled
+    }
+
+    private var currentMicPartialText: String {
+        guard let id = partialMessageIDs[.me],
+              let index = chatMessages.firstIndex(where: { $0.id == id }) else {
+            return liveSubtitleSpeaker == .me ? liveSubtitle : ""
+        }
+        return chatMessages[index].text
+    }
+
+    private func discardPartialMicTranscript() {
+        if let id = partialMessageIDs[.me],
+           let index = chatMessages.firstIndex(where: { $0.id == id }) {
+            chatMessages.remove(at: index)
+        }
+        partialMessageIDs[.me] = nil
+        if liveSubtitleSpeaker == .me {
+            clearLiveSubtitle()
+        }
+    }
+
+    private func retractMicBleed(matching otherText: String) {
+        pruneRecentMeFinals()
+        let bleed = recentMeFinals.filter { TranscriptBleedFilter.textsMatch($0.text, otherText) }
+        guard !bleed.isEmpty else { return }
+
+        let bleedIDs = Set(bleed.map { $0.segment.persistentModelID })
+        recentMeFinals.removeAll { bleedIDs.contains($0.segment.persistentModelID) }
+
+        for item in bleed {
+            removeMeTranscript(item)
+        }
+    }
+
+    private func pruneRecentMeFinals() {
+        let cutoff = Date().addingTimeInterval(-micBleedRetractWindow)
+        recentMeFinals.removeAll { $0.date < cutoff }
+    }
+
+    private func removeMeTranscript(_ item: TrackedMeTranscript) {
+        modelContext?.delete(item.segment)
+        currentSession?.segments.removeAll { $0.persistentModelID == item.segment.persistentModelID }
+        try? modelContext?.save()
+
+        if let index = lastFinalizedTranscriptIndex(for: .me) {
+            if chatMessages[index].text == item.text {
+                chatMessages.remove(at: index)
+            } else if chatMessages[index].text.hasSuffix(" \(item.text)") {
+                chatMessages[index].text.removeLast(item.text.count + 1)
+            }
+        }
+
+        let prefix = "[You] "
+        if let lastIndex = transcriptHistory.indices.last,
+           transcriptHistory[lastIndex].hasPrefix(prefix) {
+            let body = String(transcriptHistory[lastIndex].dropFirst(prefix.count))
+            if body == item.text {
+                transcriptHistory.remove(at: lastIndex)
+            } else if body.hasSuffix(" \(item.text)") {
+                transcriptHistory[lastIndex] = prefix + String(body.dropLast(item.text.count + 1))
+            }
+        }
+
+        if liveSubtitle == item.text, liveSubtitleSpeaker == .me {
+            clearLiveSubtitle()
+        }
     }
 
     private func shouldMergeTranscript(with speaker: Speaker) -> Bool {
