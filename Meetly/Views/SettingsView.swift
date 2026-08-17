@@ -3,14 +3,12 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct SettingsView: View {
-    @Bindable var sessionManager: SessionManager
     @State private var aiProvider = AppSettings.aiProvider
     @State private var textModel = AppSettings.geminiTextModel
     @State private var geminiWebSearchEnabled = AppSettings.geminiWebSearchEnabled
     @State private var overlayOpacity = AppSettings.overlayOpacity
     @State private var hideFromScreenShare = AppSettings.hideFromScreenShare
     @State private var captureMeetingAudioByDefault = AppSettings.captureMeetingAudioByDefault
-    @State private var reduceSpeakerBleed = AppSettings.reduceSpeakerBleed
     @State private var apiKeyDraft = ""
     @State private var hasStoredAPIKey = GeminiConfig.hasAPIKey
     @State private var statusMessage: String?
@@ -55,15 +53,6 @@ struct SettingsView: View {
                     }
 
                 Text("When enabled, Meetly asks you to pick a display at meeting start so other participants are labeled separately from you. This uses the macOS share picker, not the Screen Recording permission dialog.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                Toggle("Ignore speaker audio on the mic", isOn: $reduceSpeakerBleed)
-                    .onChange(of: reduceSpeakerBleed) { _, newValue in
-                        sessionManager.setReduceSpeakerBleed(newValue)
-                    }
-
-                Text("Stops meeting audio playing through speakers from being transcribed as you. Headphones usually don’t need this, but leaving it on is safe.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -256,5 +245,5 @@ struct SettingsView: View {
 }
 
 #Preview {
-    SettingsView(sessionManager: SessionManager())
+    SettingsView()
 }

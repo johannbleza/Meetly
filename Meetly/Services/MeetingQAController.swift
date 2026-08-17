@@ -64,7 +64,14 @@ final class MeetingQAController {
 
         do {
             let context = MeetingContextBuilder.context(for: session)
-            let answer = try await aiService.answerQuestion(transcript: context, question: trimmed)
+            let conversationHistory = MeetingContextBuilder.conversationHistoryText(
+                from: Array(messages.dropLast())
+            )
+            let answer = try await aiService.answerQuestion(
+                transcript: context,
+                question: trimmed,
+                conversationHistory: conversationHistory
+            )
             messages.append(
                 ChatMessage(kind: .assistantAnswer, sender: .assistant, text: answer)
             )

@@ -22,6 +22,7 @@ enum AIError: LocalizedError {
 struct FoundationModelsClient {
     private static let meetingAssistantInstructions = """
     You are a meeting assistant. Answer questions based on the meeting transcript. \
+    If the user asks a follow-up, use the previous conversation in this chat together with the transcript. \
     Always respond in plain text. Never use markdown or other text formatting.
     """
 
@@ -63,12 +64,20 @@ struct FoundationModelsClient {
         }
     }
 
-    func answerQuestion(transcript: String, question: String) async throws -> String {
+    func answerQuestion(
+        transcript: String,
+        question: String,
+        conversationHistory: String? = nil
+    ) async throws -> String {
         try ensureAvailable()
         let trimmedTranscript = TranscriptTrimmer.recentLines(
             from: TranscriptTrimmer.trimToCharacterLimit(transcript)
         )
-        let prompt = questionPrompt(transcript: trimmedTranscript, question: question)
+        let prompt = questionPrompt(
+            transcript: trimmedTranscript,
+            question: question,
+            conversationHistory: conversationHistory
+        )
         let session = makeSession(instructions: Self.meetingAssistantInstructions)
         let response = try await session.respond(to: prompt)
         return response.content.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -161,11 +170,17 @@ struct FoundationModelsClient {
         }
     }
 
-    private func questionPrompt(transcript: String, question: String) -> String {
+    private func questionPrompt(
+        transcript: String,
+        question: String,
+        conversationHistory: String?
+    ) -> String {
         let context = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        let historyBlock = MeetingContextBuilder.conversationHistoryPromptBlock(conversationHistory)
         if context.isEmpty {
             return """
             No meeting transcript has been captured yet.
+            \(historyBlock)
 
             User question:
             \(question)
@@ -179,11 +194,12 @@ struct FoundationModelsClient {
         return """
         Meeting transcript:
         \(context)
+        \(historyBlock)
 
         User question:
         \(question)
 
-        Answer the question using only the transcript context. Be concise. \
+        Answer the question using the transcript and any previous conversation in this chat. Be concise. \
         Respond in plain text only — no markdown, bullet lists, headers, or other formatting.
         """
     }

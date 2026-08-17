@@ -36,4 +36,38 @@ enum MeetingContextBuilder {
     static func hasContent(for session: MeetingSession) -> Bool {
         !context(for: session).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
+
+    /// Recent user/assistant turns for follow-up questions in the same chat.
+    static func conversationHistoryText(from messages: [ChatMessage]) -> String? {
+        let turns = Array(
+            messages
+                .filter { $0.kind == .userQuestion || $0.kind == .assistantAnswer }
+                .suffix(8)
+        )
+        guard !turns.isEmpty else { return nil }
+
+        return turns.map { message in
+            switch message.kind {
+            case .userQuestion:
+                "User: \(message.text)"
+            case .assistantAnswer:
+                "Assistant: \(message.text)"
+            case .transcript:
+                message.text
+            }
+        }.joined(separator: "\n")
+    }
+
+    static func conversationHistoryPromptBlock(_ history: String?) -> String {
+        guard let history, !history.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return ""
+        }
+        return """
+
+        Previous questions and answers in this chat:
+        \(history)
+
+        The current question may be a follow-up. Use this conversation together with the meeting context.
+        """
+    }
 }

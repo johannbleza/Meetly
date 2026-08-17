@@ -54,15 +54,6 @@ enum AppSettings {
         set { defaults.set(newValue, forKey: "captureMeetingAudioByDefault") }
     }
 
-    /// When enabled, speech that the mic picks up from speakers is not labeled as you.
-    static var reduceSpeakerBleed: Bool {
-        get {
-            if defaults.object(forKey: "reduceSpeakerBleed") == nil { return true }
-            return defaults.bool(forKey: "reduceSpeakerBleed")
-        }
-        set { defaults.set(newValue, forKey: "reduceSpeakerBleed") }
-    }
-
     /// Preferred overlay content-area height (listening / transcript scroll region).
     static var overlayContentHeight: Double {
         get {

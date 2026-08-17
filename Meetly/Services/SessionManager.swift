@@ -29,6 +29,8 @@ final class SessionManager {
     private(set) var activeQuestion: String?
     private(set) var activeQuestionImages: [ChatImageAttachment] = []
     private(set) var activeAnswer: String?
+    /// Overlay Q&A thread; cleared when the overlay chat is closed.
+    private(set) var overlayQAMessages: [ChatMessage] = []
     private(set) var isAwaitingAnswer = false
     private(set) var errorMessage: String?
     private(set) var warningMessage: String?
@@ -51,17 +53,9 @@ final class SessionManager {
     private var lastFinalTranscriptAt: [Speaker: Date] = [:]
     private var pausedAt: Date?
     private var accumulatedPausedDuration: TimeInterval = 0
-    private var transcriptBleedFilter = TranscriptBleedFilter()
-    private var recentMeFinals: [TrackedMeTranscript] = []
+    private var overlayQAConversationID = UUID()
 
     private let transcriptMergePauseThreshold: TimeInterval = 3
-    private let micBleedRetractWindow: TimeInterval = 8
-
-    private struct TrackedMeTranscript {
-        let text: String
-        let date: Date
-        let segment: TranscriptSegment
-    }
 
     var isMeetingActive: Bool {
         state == .recording || state == .paused
@@ -91,11 +85,6 @@ final class SessionManager {
     func setAIProvider(_ provider: AIProvider) {
         aiProviderSelection = provider
         AppSettings.aiProvider = provider
-    }
-
-    func setReduceSpeakerBleed(_ enabled: Bool) {
-        AppSettings.reduceSpeakerBleed = enabled
-        audioSourceRouter.isEchoSuppressionEnabled = enabled
     }
 
     var aiAvailabilityMessage: String? {
@@ -160,7 +149,6 @@ final class SessionManager {
         isSystemAudioEnabled = false
         isMicrophoneMuted = false
         audioSourceRouter.reset()
-        audioSourceRouter.isEchoSuppressionEnabled = AppSettings.reduceSpeakerBleed
         chatMessages = []
         liveSubtitle = ""
         liveSubtitleSpeaker = nil
@@ -169,10 +157,10 @@ final class SessionManager {
         activeQuestion = nil
         activeQuestionImages = []
         activeAnswer = nil
+        overlayQAMessages = []
+        overlayQAConversationID = UUID()
         partialMessageIDs.removeAll()
         lastFinalTranscriptAt.removeAll()
-        transcriptBleedFilter.reset()
-        recentMeFinals.removeAll()
         pausedAt = nil
         accumulatedPausedDuration = 0
 
@@ -384,8 +372,6 @@ final class SessionManager {
 
         finalizePartialMessages()
         audioSourceRouter.reset()
-        transcriptBleedFilter.reset()
-        recentMeFinals.removeAll()
         isMicrophoneMuted = false
         state = .idle
         currentSession = nil
@@ -395,9 +381,12 @@ final class SessionManager {
     }
 
     func dismissActiveAnswer() {
+        overlayQAConversationID = UUID()
+        overlayQAMessages = []
         activeAnswer = nil
         activeQuestion = nil
         activeQuestionImages = []
+        isAwaitingAnswer = false
     }
 
     func askQuestion(_ text: String, images: [ChatImageAttachment] = []) async {
@@ -410,14 +399,16 @@ final class SessionManager {
                 : "What can you tell me about this image?")
             : trimmed
 
-        chatMessages.append(
-            ChatMessage(
-                kind: .userQuestion,
-                sender: .user,
-                text: question,
-                imageAttachments: images
-            )
+        let conversationID = overlayQAConversationID
+        let conversationHistory = MeetingContextBuilder.conversationHistoryText(from: overlayQAMessages)
+        let userMessage = ChatMessage(
+            kind: .userQuestion,
+            sender: .user,
+            text: question,
+            imageAttachments: images
         )
+        chatMessages.append(userMessage)
+        overlayQAMessages.append(userMessage)
         activeQuestion = question
         activeQuestionImages = images
         activeAnswer = nil
@@ -425,10 +416,7 @@ final class SessionManager {
         if !images.isEmpty, !GeminiRESTClient.isAvailable {
             let message = "Add your Gemini API key in Settings to ask about images."
             errorMessage = message
-            activeAnswer = message
-            chatMessages.append(
-                ChatMessage(kind: .assistantAnswer, sender: .assistant, text: message)
-            )
+            appendOverlayAnswer(message, conversationID: conversationID)
             return
         }
 
@@ -436,55 +424,46 @@ final class SessionManager {
             let message = aiService.availabilityMessage
                 ?? "Configure \(aiService.provider.label) in Settings before asking questions."
             errorMessage = message
-            activeAnswer = message
-            chatMessages.append(
-                ChatMessage(kind: .assistantAnswer, sender: .assistant, text: message)
-            )
+            appendOverlayAnswer(message, conversationID: conversationID)
             return
         }
 
         isAwaitingAnswer = true
-        defer { isAwaitingAnswer = false }
 
         do {
             let transcript = transcriptContext()
             let answer = try await aiService.answerQuestion(
                 transcript: transcript,
                 question: question,
-                images: images
+                images: images,
+                conversationHistory: conversationHistory
             )
-            activeAnswer = answer
-            chatMessages.append(
-                ChatMessage(kind: .assistantAnswer, sender: .assistant, text: answer)
-            )
+            appendOverlayAnswer(answer, conversationID: conversationID)
         } catch {
-            let message = "Sorry, I couldn't answer that: \(error.localizedDescription)"
             errorMessage = error.localizedDescription
-            activeAnswer = message
-            chatMessages.append(
-                ChatMessage(
-                    kind: .assistantAnswer,
-                    sender: .assistant,
-                    text: message
-                )
+            appendOverlayAnswer(
+                "Sorry, I couldn't answer that: \(error.localizedDescription)",
+                conversationID: conversationID
             )
         }
+
+        if conversationID == overlayQAConversationID {
+            isAwaitingAnswer = false
+        }
+    }
+
+    private func appendOverlayAnswer(_ text: String, conversationID: UUID) {
+        guard conversationID == overlayQAConversationID else { return }
+        activeAnswer = text
+        let message = ChatMessage(kind: .assistantAnswer, sender: .assistant, text: text)
+        chatMessages.append(message)
+        overlayQAMessages.append(message)
     }
 
     private func handlePartialTranscript(text: String, speaker: Speaker) {
         let sender: ChatMessageSender = speaker == .me ? .me : .other
         guard text != "…" else {
             isLiveSubtitlePartial = true
-            return
-        }
-
-        if speaker == .other {
-            transcriptBleedFilter.recordOtherPartial(text)
-            if shouldFilterMicBleed, transcriptBleedFilter.looksLikeBleed(currentMicPartialText) {
-                discardPartialMicTranscript()
-            }
-        } else if shouldFilterMicBleed, transcriptBleedFilter.looksLikeBleed(text) {
-            discardPartialMicTranscript()
             return
         }
 
@@ -511,19 +490,6 @@ final class SessionManager {
     private func handleFinalTranscript(text: String, speaker: Speaker) {
         guard let currentSession, let modelContext else { return }
 
-        if speaker == .other {
-            transcriptBleedFilter.recordOtherFinal(text)
-            if shouldFilterMicBleed {
-                retractMicBleed(matching: text)
-                if transcriptBleedFilter.looksLikeBleed(currentMicPartialText) {
-                    discardPartialMicTranscript()
-                }
-            }
-        } else if shouldFilterMicBleed, transcriptBleedFilter.looksLikeBleed(text) {
-            discardPartialMicTranscript()
-            return
-        }
-
         let sender: ChatMessageSender = speaker == .me ? .me : .other
         let merging = shouldMergeTranscript(with: speaker)
 
@@ -546,81 +512,6 @@ final class SessionManager {
         currentSession.segments.append(segment)
         modelContext.insert(segment)
         try? modelContext.save()
-
-        if speaker == .me {
-            recentMeFinals.append(TrackedMeTranscript(text: text, date: .now, segment: segment))
-            pruneRecentMeFinals()
-        }
-    }
-
-    private var shouldFilterMicBleed: Bool {
-        AppSettings.reduceSpeakerBleed && isSystemAudioEnabled
-    }
-
-    private var currentMicPartialText: String {
-        guard let id = partialMessageIDs[.me],
-              let index = chatMessages.firstIndex(where: { $0.id == id }) else {
-            return liveSubtitleSpeaker == .me ? liveSubtitle : ""
-        }
-        return chatMessages[index].text
-    }
-
-    private func discardPartialMicTranscript() {
-        if let id = partialMessageIDs[.me],
-           let index = chatMessages.firstIndex(where: { $0.id == id }) {
-            chatMessages.remove(at: index)
-        }
-        partialMessageIDs[.me] = nil
-        if liveSubtitleSpeaker == .me {
-            clearLiveSubtitle()
-        }
-    }
-
-    private func retractMicBleed(matching otherText: String) {
-        pruneRecentMeFinals()
-        let bleed = recentMeFinals.filter { TranscriptBleedFilter.textsMatch($0.text, otherText) }
-        guard !bleed.isEmpty else { return }
-
-        let bleedIDs = Set(bleed.map { $0.segment.persistentModelID })
-        recentMeFinals.removeAll { bleedIDs.contains($0.segment.persistentModelID) }
-
-        for item in bleed {
-            removeMeTranscript(item)
-        }
-    }
-
-    private func pruneRecentMeFinals() {
-        let cutoff = Date().addingTimeInterval(-micBleedRetractWindow)
-        recentMeFinals.removeAll { $0.date < cutoff }
-    }
-
-    private func removeMeTranscript(_ item: TrackedMeTranscript) {
-        modelContext?.delete(item.segment)
-        currentSession?.segments.removeAll { $0.persistentModelID == item.segment.persistentModelID }
-        try? modelContext?.save()
-
-        if let index = lastFinalizedTranscriptIndex(for: .me) {
-            if chatMessages[index].text == item.text {
-                chatMessages.remove(at: index)
-            } else if chatMessages[index].text.hasSuffix(" \(item.text)") {
-                chatMessages[index].text.removeLast(item.text.count + 1)
-            }
-        }
-
-        let prefix = "[You] "
-        if let lastIndex = transcriptHistory.indices.last,
-           transcriptHistory[lastIndex].hasPrefix(prefix) {
-            let body = String(transcriptHistory[lastIndex].dropFirst(prefix.count))
-            if body == item.text {
-                transcriptHistory.remove(at: lastIndex)
-            } else if body.hasSuffix(" \(item.text)") {
-                transcriptHistory[lastIndex] = prefix + String(body.dropLast(item.text.count + 1))
-            }
-        }
-
-        if liveSubtitle == item.text, liveSubtitleSpeaker == .me {
-            clearLiveSubtitle()
-        }
     }
 
     private func shouldMergeTranscript(with speaker: Speaker) -> Bool {

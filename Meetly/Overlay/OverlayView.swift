@@ -28,9 +28,19 @@ struct OverlayView: View {
     private static let scrollBottomThreshold: CGFloat = 20
 
     private var hasQuestionContext: Bool {
-        sessionManager.activeAnswer != nil
+        !sessionManager.overlayQAMessages.isEmpty
+            || sessionManager.activeAnswer != nil
             || sessionManager.isAwaitingAnswer
             || sessionManager.activeQuestion != nil
+    }
+
+    /// Completed Q&A from earlier in this overlay chat (latest question stays in the banner).
+    private var priorConversationMessages: [ChatMessage] {
+        let messages = sessionManager.overlayQAMessages
+        if sessionManager.isAwaitingAnswer {
+            return Array(messages.dropLast())
+        }
+        return Array(messages.dropLast(2))
     }
 
     /// User-resized baseline; answers can grow above it unless the user has dragged.
@@ -221,9 +231,46 @@ struct OverlayView: View {
                 .background(.quaternary.opacity(0.5), in: Capsule())
 
             Spacer(minLength: 0)
+
+            Button {
+                sessionManager.dismissActiveAnswer()
+            } label: {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(.borderless)
+            .controlSize(.small)
+            .help("Close chat")
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
+    }
+
+    private var priorConversation: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(priorConversationMessages) { message in
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(message.sender.label)
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.tertiary)
+
+                    if !message.imageAttachments.isEmpty {
+                        HStack(spacing: 4) {
+                            ForEach(message.imageAttachments) { image in
+                                ChatImageAttachmentPreview(attachment: image, style: .banner)
+                            }
+                        }
+                    }
+
+                    Text(message.text)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.leading)
+                        .textSelection(.enabled)
+                }
+            }
+
+            Divider().opacity(0.2)
+        }
     }
 
     private var finalizedTranscriptMessages: [ChatMessage] {
@@ -257,38 +304,38 @@ struct OverlayView: View {
             }
 
             Group {
-                if sessionManager.isAwaitingAnswer {
-                    HStack(spacing: 10) {
-                        ProgressView()
-                            .controlSize(.regular)
-                        Text("Thinking…")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                        Spacer(minLength: 0)
-                    }
-                    .padding(.vertical, 4)
-                    .id(Self.activeAnswerID)
-                } else if let answer = sessionManager.activeAnswer {
-                    HStack(alignment: .top, spacing: 8) {
-                        Text(answer)
-                            .font(.body)
-                            .foregroundStyle(.primary)
-                            .lineSpacing(2)
-                            .multilineTextAlignment(.leading)
-                            .textSelection(.enabled)
-                        Spacer(minLength: 0)
-                        Button {
-                            sessionManager.dismissActiveAnswer()
-                        } label: {
-                            Image(systemName: "xmark")
+                if hasQuestionContext {
+                    VStack(alignment: .leading, spacing: 12) {
+                        if !priorConversationMessages.isEmpty {
+                            priorConversation
                         }
-                        .buttonStyle(.borderless)
-                        .controlSize(.small)
-                        .help("Dismiss answer")
+
+                        if sessionManager.isAwaitingAnswer {
+                            HStack(spacing: 10) {
+                                ProgressView()
+                                    .controlSize(.regular)
+                                Text("Thinking…")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                                Spacer(minLength: 0)
+                            }
+                            .padding(.vertical, 4)
+                            .id(Self.activeAnswerID)
+                        } else if let answer = sessionManager.activeAnswer {
+                            HStack(alignment: .top, spacing: 8) {
+                                Text(answer)
+                                    .font(.body)
+                                    .foregroundStyle(.primary)
+                                    .lineSpacing(2)
+                                    .multilineTextAlignment(.leading)
+                                    .textSelection(.enabled)
+                                Spacer(minLength: 0)
+                            }
+                            .id(Self.activeAnswerID)
+                        }
                     }
-                    .id(Self.activeAnswerID)
                     .background {
-                        // Size from the answer alone so live captions don't jitter the panel.
+                        // Size from the Q&A thread so live captions don't jitter the panel.
                         GeometryReader { proxy in
                             Color.clear.preference(
                                 key: OverlayContentHeightKey.self,
@@ -375,6 +422,11 @@ struct OverlayView: View {
                     scrollToAnswer(proxy: proxy)
                 } else if !sessionManager.isAwaitingAnswer {
                     resumeFollowingLive(proxy: proxy)
+                }
+            }
+            .onChange(of: sessionManager.overlayQAMessages.count) { _, _ in
+                if sessionManager.isAwaitingAnswer || sessionManager.activeAnswer != nil {
+                    scrollToAnswer(proxy: proxy)
                 }
             }
             .onChange(of: measuredAnswerHeight) { _, height in

@@ -24,17 +24,24 @@ struct GeminiRESTClient {
         )
     }
 
-    func answerQuestion(transcript: String, question: String, images: [ChatImageAttachment]) async throws -> String {
+    func answerQuestion(
+        transcript: String,
+        question: String,
+        images: [ChatImageAttachment],
+        conversationHistory: String? = nil
+    ) async throws -> String {
         let context = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         let webSearch = AppSettings.geminiWebSearchEnabled
         let imageLabel = images.count > 1 ? "Images are attached" : "An image is attached"
         let imageInstruction = images.count > 1
             ? "Use the attached images to answer the user's question."
             : "Use the image to answer the user's question."
+        let historyBlock = MeetingContextBuilder.conversationHistoryPromptBlock(conversationHistory)
         let prompt: String
         if context.isEmpty {
             prompt = """
             No meeting transcript has been captured yet.
+            \(historyBlock)
 
             \(imageLabel). \(imageInstruction)
 
@@ -48,6 +55,7 @@ struct GeminiRESTClient {
             prompt = """
             Meeting transcript:
             \(context)
+            \(historyBlock)
 
             \(imageLabel). Prefer the meeting transcript and the \(images.count > 1 ? "images" : "image") when they answer the question.
 
@@ -71,13 +79,19 @@ struct GeminiRESTClient {
         )
     }
 
-    func answerQuestion(transcript: String, question: String) async throws -> String {
+    func answerQuestion(
+        transcript: String,
+        question: String,
+        conversationHistory: String? = nil
+    ) async throws -> String {
         let context = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         let webSearch = AppSettings.geminiWebSearchEnabled
+        let historyBlock = MeetingContextBuilder.conversationHistoryPromptBlock(conversationHistory)
         let prompt: String
         if context.isEmpty {
             prompt = """
             No meeting transcript has been captured yet.
+            \(historyBlock)
 
             User question:
             \(question)
@@ -89,6 +103,7 @@ struct GeminiRESTClient {
             prompt = """
             Meeting transcript:
             \(context)
+            \(historyBlock)
 
             User question:
             \(question)
@@ -152,6 +167,7 @@ struct GeminiRESTClient {
 
         return """
         You are a meeting assistant. Answer questions using \(sources). \
+        If the user asks a follow-up, use the previous conversation in this chat together with those sources. \
         Always respond in plain text. Never use markdown or other text formatting.
         """
     }
