@@ -70,11 +70,6 @@ struct MeetingsHomeView: View {
 
     private var greetingBand: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text(greeting)
-                .font(.system(size: 24, weight: .semibold))
-                .foregroundStyle(AppTheme.textPrimary)
-                .offset(y: greetingPush)
-
             if let errorMessage = sessionManager.errorMessage {
                 StatusBanner(message: errorMessage, systemImage: "exclamationmark.octagon", color: AppTheme.danger)
                     .offset(y: greetingPush)
@@ -98,7 +93,8 @@ struct MeetingsHomeView: View {
                     FeaturedMeetingCard(
                         session: featured,
                         isRecording: isRecording(featured),
-                        summaryShift: (hero?.summaryShift ?? 0) * heroProgress
+                        summaryShift: (hero?.summaryShift ?? 0) * heroProgress,
+                        heroProgress: hero == nil ? nil : heroProgress
                     ) {
                         onOpenFeatured(featured)
                     }
@@ -129,17 +125,6 @@ struct MeetingsHomeView: View {
             AppDivider(axis: .horizontal)
                 .offset(y: curtainDrop)
         }
-    }
-
-    /// "Good evening, Johann." using the first name of the Mac's user account.
-    private var greeting: String {
-        let salutation = switch Calendar.current.component(.hour, from: .now) {
-        case 5..<12: "Good morning"
-        case 12..<17: "Good afternoon"
-        default: "Good evening"
-        }
-        let firstName = NSFullUserName().split(separator: " ").first.map(String.init) ?? ""
-        return firstName.isEmpty ? "\(salutation)." : "\(salutation), \(firstName)."
     }
 
     /// The meeting being recorded, or else the most recent one.
@@ -304,6 +289,9 @@ private struct FeaturedMeetingCard: View {
     let isRecording: Bool
     /// The meeting page shows its summary below its tabs, so it slides down as the card opens.
     var summaryShift: CGFloat = 0
+    /// While it opens into (or closes from) the meeting page, which hides its own summary until
+    /// then: this summary stands in for it, so its fade-out melts away as it lands.
+    var heroProgress: CGFloat?
     let onOpen: () -> Void
 
     @State private var isHovered = false
@@ -327,7 +315,10 @@ private struct FeaturedMeetingCard: View {
                     .lineLimit(3)
                     .mask(
                         LinearGradient(
-                            stops: [.init(color: .black, location: 0.6), .init(color: .black.opacity(0.25), location: 1)],
+                            stops: [
+                                .init(color: .black, location: 0.6),
+                                .init(color: .black.opacity(0.25 + 0.75 * (heroProgress ?? 0)), location: 1),
+                            ],
                             startPoint: .top,
                             endPoint: .bottom
                         )
@@ -337,7 +328,8 @@ private struct FeaturedMeetingCard: View {
             }
         }
         .fixedSize(horizontal: false, vertical: true)
-        .opacity(isHovered ? 0.85 : 1)
+        // Full strength while it stands in for the meeting page's header.
+        .opacity(isHovered && heroProgress == nil ? 0.85 : 1)
         .contentShape(Rectangle())
         .onHover { isHovered = $0 }
         .onTapGesture(perform: onOpen)

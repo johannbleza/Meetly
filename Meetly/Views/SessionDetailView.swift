@@ -238,6 +238,9 @@ struct SessionDetailView: View {
                     .lineSpacing(5)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .fixedSize(horizontal: false, vertical: true)
+                    // The featured card's summary sits exactly here while it opens into this
+                    // page. Two copies of the text never line up exactly, so only one is shown.
+                    .opacity(hero == nil ? 1 : 0)
             }
         } else if !isSearching {
             EmptySummaryCard(controller: summaryController)
