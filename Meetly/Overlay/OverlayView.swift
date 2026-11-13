@@ -26,6 +26,8 @@ struct OverlayView: View {
     private static let liveSubtitleID = "live-subtitle"
     private static let activeAnswerID = "active-answer"
     private static let scrollBottomThreshold: CGFloat = 20
+    private static let defaultScreenQuestion =
+        "This is a screenshot of my screen right now. Explain what it shows and point out anything useful for this meeting."
 
     private var hasQuestionContext: Bool {
         !sessionManager.overlayQAMessages.isEmpty
@@ -106,9 +108,12 @@ struct OverlayView: View {
     private var idleContent: some View {
         VStack(spacing: 14) {
             VStack(spacing: 4) {
-                Text("Ready to record")
+                Text(sessionManager.detectedMeetingPrompt?.promptTitle ?? "Ready to record")
                     .font(.headline)
-                Text("Start when you're in your meeting.")
+                    .multilineTextAlignment(.center)
+                Text(sessionManager.detectedMeetingPrompt == nil
+                    ? "Start when you're in your meeting."
+                    : "Record and transcribe this call?")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -129,6 +134,14 @@ struct OverlayView: View {
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
+
+            if sessionManager.detectedMeetingPrompt != nil {
+                Button("Not now") {
+                    sessionManager.dismissDetectedMeeting()
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.secondary)
+            }
         }
         .padding(.horizontal, 20)
         .padding(.top, 14)
@@ -143,6 +156,17 @@ struct OverlayView: View {
                 isShowingSettings: $isShowingSettings,
                 isFolded: isFolded
             )
+
+            // Outside the foldable area so the countdown stays visible when folded.
+            if let deadline = sessionManager.autoStopDeadline {
+                autoStopBanner(deadline: deadline, reason: "Call ended.") {
+                    sessionManager.keepRecordingAfterCallEnded()
+                }
+            } else if let deadline = sessionManager.idleStopDeadline {
+                autoStopBanner(deadline: deadline, reason: "No speech heard.") {
+                    sessionManager.keepRecordingDespiteSilence()
+                }
+            }
 
             VStack(spacing: 0) {
                 Divider().opacity(0.25)
@@ -209,6 +233,30 @@ struct OverlayView: View {
         .animation(OverlayGlassStyle.resizeAnimation, value: hasQuestionContext)
         .animation(OverlayGlassStyle.resizeAnimation, value: scrollAreaHeight)
         .animation(OverlayGlassStyle.resizeAnimation, value: pendingImages.map(\.id))
+    }
+
+    private func autoStopBanner(
+        deadline: Date,
+        reason: String,
+        onKeepRecording: @escaping () -> Void
+    ) -> some View {
+        HStack(spacing: 10) {
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                let secondsLeft = max(0, Int(deadline.timeIntervalSince(context.date).rounded(.up)))
+                Text("\(reason) Stopping in \(secondsLeft)s")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+
+            Spacer(minLength: 0)
+
+            Button("Keep recording", action: onKeepRecording)
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
     }
 
     private func questionBanner(_ question: String) -> some View {
@@ -285,7 +333,7 @@ struct OverlayView: View {
                         ForEach(finalizedTranscriptMessages) { message in
                             Text("[\(message.sender.label)] \(message.text)")
                                 .font(.callout)
-                                .foregroundStyle(.tertiary)
+                                .foregroundStyle(.secondary)
                                 .multilineTextAlignment(.leading)
                                 .id(message.id)
                         }
@@ -295,7 +343,7 @@ struct OverlayView: View {
                         ForEach(Array(sessionManager.transcriptHistory.enumerated()), id: \.offset) { index, line in
                             Text(line)
                                 .font(.callout)
-                                .foregroundStyle(.tertiary)
+                                .foregroundStyle(.secondary)
                                 .multilineTextAlignment(.leading)
                                 .id("transcript-history-\(index)")
                         }
@@ -345,29 +393,36 @@ struct OverlayView: View {
                     }
                 }
 
-                if !sessionManager.liveSubtitle.isEmpty, sessionManager.liveSubtitle != "…" {
+                if !sessionManager.liveCaptions.isEmpty {
                     VStack(alignment: .leading, spacing: 6) {
                         if sessionManager.activeAnswer != nil || sessionManager.isAwaitingAnswer {
                             Divider().opacity(0.2)
                                 .padding(.vertical, 4)
                         }
-                        if let speaker = sessionManager.liveSubtitleSpeaker {
-                            Text(speaker == .me ? "You" : "Other")
-                                .font(.caption2.weight(.medium))
-                                .foregroundStyle(.secondary)
+                        ForEach(sessionManager.liveCaptions) { caption in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(caption.speaker.label)
+                                    .font(.caption2.weight(.medium))
+                                    .foregroundStyle(.secondary)
+                                Text(caption.text)
+                                    .font(.body.weight(.medium))
+                                    .foregroundStyle(.primary.opacity(0.85))
+                                    .multilineTextAlignment(.leading)
+                            }
                         }
-                        Text(sessionManager.liveSubtitle)
-                            .font(.body.weight(.medium))
-                            .foregroundStyle(.primary.opacity(sessionManager.isLiveSubtitlePartial ? 0.75 : 1))
-                            .multilineTextAlignment(.leading)
-                            .transaction { $0.animation = nil }
                     }
+                    .transaction { $0.animation = nil }
                     .id(liveSubtitleID)
                 } else if sessionManager.activeAnswer == nil, !sessionManager.isAwaitingAnswer {
                     if sessionManager.state == .paused {
                         Text("Paused")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
+                            .id(liveSubtitleID)
+                    } else if !finalizedTranscriptMessages.isEmpty {
+                        // No "Listening…" between utterances: it would flicker on every pause.
+                        Color.clear
+                            .frame(height: 1)
                             .id(liveSubtitleID)
                     } else {
                         Text("Listening…")
@@ -406,7 +461,7 @@ struct OverlayView: View {
                     isFollowingLive = false
                 }
             }
-            .onChange(of: sessionManager.liveSubtitle) { _, _ in
+            .onChange(of: sessionManager.liveCaptions) { _, _ in
                 scrollToLiveIfFollowing(proxy: proxy)
             }
             .onChange(of: finalizedTranscriptMessages.count) { _, _ in
@@ -485,14 +540,16 @@ struct OverlayView: View {
 
     private func scrollToLiveIfFollowing(proxy: ScrollViewProxy) {
         guard isFollowingLive, sessionManager.activeAnswer == nil else { return }
-        withAnimation(OverlayGlassStyle.resizeAnimation) {
-            proxy.scrollTo(Self.liveSubtitleID, anchor: .bottom)
-        }
+        // Not animated: captions update too often, and overlapping scrolls make the text shake.
+        proxy.scrollTo(Self.liveSubtitleID, anchor: .bottom)
     }
 
     private var actionRow: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
+                actionButton("Ask about screen", icon: "camera.viewfinder", action: askAboutScreen)
+                    .disabled(sessionManager.state != .recording || sessionManager.isCapturingScreen)
+                    .help("Screenshot your shared display and ask AI about it")
                 actionButton("What to say", icon: "text.quote") {
                     Task { await sessionManager.askQuestion("What should I say next based on this conversation?") }
                 }
@@ -507,6 +564,19 @@ struct OverlayView: View {
             .padding(.vertical, 10)
         }
         .padding(.top, 4)
+    }
+
+    /// Sends right away, using anything already typed or pasted in the input bar.
+    private func askAboutScreen() {
+        Task {
+            guard let screenshot = await sessionManager.captureScreenForQuestion() else { return }
+            let typed = questionText.trimmingCharacters(in: .whitespacesAndNewlines)
+            let question = typed.isEmpty ? Self.defaultScreenQuestion : typed
+            let images = pendingImages + [screenshot]
+            questionText = ""
+            pendingImages = []
+            await sessionManager.askQuestion(question, images: images)
+        }
     }
 
     private func actionButton(_ title: String, icon: String, action: @escaping () -> Void) -> some View {

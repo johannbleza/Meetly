@@ -23,12 +23,16 @@ struct HomeShellView: View {
 
     @State private var selectedPanel: HomePanel = .meetings
     @State private var selectedSessionID: UUID?
-    @State private var sidebarSearchText = ""
     @State private var sessionPendingDelete: MeetingSession?
     @State private var showDeleteConfirmation = false
+    @AppStorage("homeSidebarWidth") private var sidebarWidth: Double = Double(AppTheme.sidebarWidth)
 
     private var allSessions: [MeetingSession] {
         activeSessions + archivedSessions
+    }
+
+    private var clampedSidebarWidth: CGFloat {
+        min(max(CGFloat(sidebarWidth), AppTheme.sidebarMinWidth), AppTheme.sidebarMaxWidth)
     }
 
     private var selectedSession: MeetingSession? {
@@ -42,7 +46,8 @@ struct HomeShellView: View {
             AppDivider()
 
             sidebarContent
-            AppDivider()
+                .frame(width: clampedSidebarWidth)
+            SidebarResizeHandle(width: $sidebarWidth)
 
             detailContent
         }
@@ -91,14 +96,13 @@ struct HomeShellView: View {
             MeetingsSidebarView(
                 sessionManager: sessionManager,
                 sessions: activeSessions,
-                searchText: $sidebarSearchText,
                 selectedSessionID: $selectedSessionID,
                 sessionPendingDelete: $sessionPendingDelete
             )
         case .archived:
             ArchivedMeetingsView(
                 sessions: archivedSessions,
-                searchText: $sidebarSearchText,
+                inUseSessionID: sessionManager.currentSession?.id,
                 selectedSessionID: $selectedSessionID,
                 sessionPendingDelete: $sessionPendingDelete
             )
@@ -119,7 +123,7 @@ struct HomeShellView: View {
 
             Spacer()
         }
-        .frame(width: AppTheme.sidebarWidth)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .appPanelBackground(AppTheme.bgSidebar)
     }
 
@@ -132,7 +136,10 @@ struct HomeShellView: View {
         } else if let selectedSession {
             SessionDetailView(
                 session: selectedSession,
-                onArchive: selectedSession.isArchivedValue ? nil : {
+                onContinue: sessionManager.state == .idle ? {
+                    Task { await sessionManager.continueMeeting(selectedSession) }
+                } : nil,
+                onArchive: selectedSession.isArchivedValue || sessionManager.isInUse(selectedSession) ? nil : {
                     archiveSession(selectedSession)
                 },
                 onUnarchive: selectedSession.isArchivedValue ? {
@@ -141,7 +148,7 @@ struct HomeShellView: View {
                 onExport: {
                     MeetingMarkdownExporter.export(selectedSession)
                 },
-                onDelete: {
+                onDelete: sessionManager.isInUse(selectedSession) ? nil : {
                     sessionPendingDelete = selectedSession
                 }
             )
@@ -158,6 +165,7 @@ struct HomeShellView: View {
     }
 
     private func archiveSession(_ session: MeetingSession) {
+        guard !sessionManager.isInUse(session) else { return }
         SessionActions.archive(session, context: modelContext)
         if selectedSessionID == session.id {
             selectedSessionID = nil
@@ -173,11 +181,50 @@ struct HomeShellView: View {
 
     private func deletePendingSession() {
         guard let sessionPendingDelete else { return }
+        // A recording may have started on this meeting while the confirmation was open.
+        guard !sessionManager.isInUse(sessionPendingDelete) else {
+            self.sessionPendingDelete = nil
+            return
+        }
         if selectedSessionID == sessionPendingDelete.id {
             selectedSessionID = nil
         }
         SessionActions.delete(sessionPendingDelete, context: modelContext)
         self.sessionPendingDelete = nil
+    }
+}
+
+/// The divider between the sidebar and the detail pane; drag it to resize the sidebar.
+private struct SidebarResizeHandle: View {
+    @Binding var width: Double
+    @State private var dragStartWidth: Double?
+
+    var body: some View {
+        AppDivider()
+            .overlay {
+                Color.clear
+                    .frame(width: 9)
+                    .contentShape(Rectangle())
+                    .pointerStyle(.columnResize)
+                    .gesture(
+                        DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                            .onChanged { value in
+                                let start = dragStartWidth ?? width
+                                dragStartWidth = start
+                                width = min(
+                                    max(start + value.translation.width, Double(AppTheme.sidebarMinWidth)),
+                                    Double(AppTheme.sidebarMaxWidth)
+                                )
+                            }
+                            .onEnded { _ in
+                                dragStartWidth = nil
+                            }
+                    )
+                    .onTapGesture(count: 2) {
+                        width = Double(AppTheme.sidebarWidth)
+                    }
+            }
+            .zIndex(1)
     }
 }
 

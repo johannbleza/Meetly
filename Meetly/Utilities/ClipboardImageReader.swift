@@ -97,6 +97,11 @@ enum ClipboardImageReader {
         return NSImage(cgImage: cgImage, size: proposedRect.size)
     }
 
+    static func attachment(from image: CGImage) -> ChatImageAttachment? {
+        let size = NSSize(width: image.width, height: image.height)
+        return makeAttachment(from: NSImage(cgImage: image, size: size))
+    }
+
     private static func makeAttachment(from image: NSImage) -> ChatImageAttachment? {
         let resized = resizeIfNeeded(image)
         guard let cgImage = resized.cgImage(forProposedRect: nil, context: nil, hints: nil) else {

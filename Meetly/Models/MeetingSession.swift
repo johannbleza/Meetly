@@ -9,10 +9,17 @@ final class MeetingSession {
     var title: String?
     var isArchived: Bool?
     var archivedAt: Date?
+    /// Set while the meeting is pinned to the top of the meetings list.
+    var pinnedAt: Date?
+    /// Time between recording stretches of a continued meeting, left out of `duration`.
+    var continuationGapDuration: TimeInterval?
     @Relationship(deleteRule: .cascade, inverse: \TranscriptSegment.session)
     var segments: [TranscriptSegment]
     @Relationship(deleteRule: .cascade, inverse: \MeetingSummary.session)
     var summary: MeetingSummary?
+    /// Questions asked about this meeting and their answers. Optional so existing stores migrate.
+    @Relationship(deleteRule: .cascade, inverse: \QAMessage.session)
+    var qaMessages: [QAMessage]?
 
     init(
         id: UUID = UUID(),
@@ -36,7 +43,7 @@ final class MeetingSession {
 
     var duration: TimeInterval? {
         guard let endedAt else { return nil }
-        return endedAt.timeIntervalSince(startedAt)
+        return max(0, endedAt.timeIntervalSince(startedAt) - (continuationGapDuration ?? 0))
     }
 
     var displayTitle: String {
@@ -46,5 +53,13 @@ final class MeetingSession {
 
     var isArchivedValue: Bool {
         isArchived ?? false
+    }
+
+    var isPinned: Bool {
+        pinnedAt != nil
+    }
+
+    var sortedQAMessages: [QAMessage] {
+        (qaMessages ?? []).sorted { $0.timestamp < $1.timestamp }
     }
 }

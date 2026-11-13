@@ -5,23 +5,23 @@ import Foundation
 final class LiveTranscriptionService {
     private final class ChannelStorage: @unchecked Sendable {
         private let lock = NSLock()
-        private var mic: AppleSpeechChannel?
-        private var system: AppleSpeechChannel?
+        private var mic: (any TranscriptionChannel)?
+        private var system: (any TranscriptionChannel)?
 
-        func set(mic: AppleSpeechChannel?, system: AppleSpeechChannel?) {
+        func set(mic: (any TranscriptionChannel)?, system: (any TranscriptionChannel)?) {
             lock.lock()
             self.mic = mic
             self.system = system
             lock.unlock()
         }
 
-        func setSystem(_ system: AppleSpeechChannel?) {
+        func setSystem(_ system: (any TranscriptionChannel)?) {
             lock.lock()
             self.system = system
             lock.unlock()
         }
 
-        func take() -> (AppleSpeechChannel?, AppleSpeechChannel?) {
+        func take() -> ((any TranscriptionChannel)?, (any TranscriptionChannel)?) {
             lock.lock()
             let pair = (mic, system)
             mic = nil
@@ -30,13 +30,13 @@ final class LiveTranscriptionService {
             return pair
         }
 
-        func micChannel() -> AppleSpeechChannel? {
+        func micChannel() -> (any TranscriptionChannel)? {
             lock.lock()
             defer { lock.unlock() }
             return mic
         }
 
-        func systemChannel() -> AppleSpeechChannel? {
+        func systemChannel() -> (any TranscriptionChannel)? {
             lock.lock()
             defer { lock.unlock() }
             return system
@@ -47,12 +47,28 @@ final class LiveTranscriptionService {
     private var transcriptionLocale: Locale?
     private var localeReserved = false
     private var isStartingSystemChannel = false
+    private var whisperRuntime: WhisperRuntime?
+
+    /// Set when the selected engine couldn't be used and this meeting fell back to Apple Speech.
+    private(set) var fallbackNotice: String?
 
     var onPartialResult: ((String, Speaker) -> Void)?
     var onFinalResult: ((String, Speaker) -> Void)?
     var onSystemChannelError: ((Error) -> Void)?
 
     func prepare() async throws {
+        fallbackNotice = nil
+
+        if AppSettings.transcriptionEngine == .whisper {
+            do {
+                whisperRuntime = try await WhisperModelStore.shared.loadRuntime(for: AppSettings.whisperModel)
+                return
+            } catch {
+                // A meeting is time-critical: keep transcribing rather than failing to start.
+                fallbackNotice = "\(error.localizedDescription) Using Apple Speech for this meeting."
+            }
+        }
+
         guard await AppleSpeechChannel.requestAuthorization() else {
             throw AppleSpeechError.notAuthorized
         }
@@ -63,15 +79,17 @@ final class LiveTranscriptionService {
     }
 
     func start() async throws {
-        let locale = try await resolvedLocale()
-        if !localeReserved {
-            try await AppleSpeechChannel.reserveLocale(locale)
-            localeReserved = true
+        if whisperRuntime == nil {
+            let locale = try await resolvedLocale()
+            if !localeReserved {
+                try await AppleSpeechChannel.reserveLocale(locale)
+                localeReserved = true
+            }
         }
 
-        let mic = AppleSpeechChannel()
+        let mic = try await makeChannel()
         wireCallbacks(for: mic, speaker: .me)
-        try await mic.start(locale: locale)
+        try await mic.start()
         channels.set(mic: mic, system: nil)
 
         // Eager-start the system channel so meeting audio has no cold-start gap.
@@ -111,6 +129,16 @@ final class LiveTranscriptionService {
             await AppleSpeechChannel.releaseLocale(transcriptionLocale)
             localeReserved = false
         }
+
+        await whisperRuntime?.unload()
+        whisperRuntime = nil
+    }
+
+    private func makeChannel() async throws -> any TranscriptionChannel {
+        if let whisperRuntime {
+            return WhisperChannel(runtime: whisperRuntime)
+        }
+        return AppleSpeechChannel(locale: try await resolvedLocale())
     }
 
     private func resolvedLocale() async throws -> Locale {
@@ -128,10 +156,9 @@ final class LiveTranscriptionService {
         defer { isStartingSystemChannel = false }
 
         do {
-            let locale = try await resolvedLocale()
-            let system = AppleSpeechChannel()
+            let system = try await makeChannel()
             wireCallbacks(for: system, speaker: .other)
-            try await system.start(locale: locale)
+            try await system.start()
             channels.setSystem(system)
         } catch {
             if reportErrors {
@@ -140,7 +167,7 @@ final class LiveTranscriptionService {
         }
     }
 
-    private func wireCallbacks(for channel: AppleSpeechChannel, speaker: Speaker) {
+    private func wireCallbacks(for channel: any TranscriptionChannel, speaker: Speaker) {
         channel.onPartialResult = { [weak self] text in
             self?.onPartialResult?(text, speaker)
         }

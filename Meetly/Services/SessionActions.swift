@@ -5,6 +5,12 @@ enum SessionActions {
     static func archive(_ session: MeetingSession, context: ModelContext) {
         session.isArchived = true
         session.archivedAt = .now
+        session.pinnedAt = nil
+        save(context)
+    }
+
+    static func togglePin(_ session: MeetingSession, context: ModelContext) {
+        session.pinnedAt = session.isPinned ? nil : .now
         save(context)
     }
 
@@ -37,30 +43,5 @@ extension MeetingSession {
         let minutes = Int(duration) / 60
         let seconds = Int(duration) % 60
         return String(format: "%d min %02d sec", minutes, seconds)
-    }
-
-    func matchesSearch(_ query: String) -> Bool {
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return true }
-
-        let needle = trimmed.lowercased()
-        if displayTitle.lowercased().contains(needle) {
-            return true
-        }
-        if let summary {
-            if summary.summaryText.lowercased().contains(needle) {
-                return true
-            }
-            if summary.keyPoints.contains(where: { $0.lowercased().contains(needle) }) {
-                return true
-            }
-            if summary.actionItems.contains(where: { $0.text.lowercased().contains(needle) }) {
-                return true
-            }
-        }
-        if segments.contains(where: { $0.text.lowercased().contains(needle) }) {
-            return true
-        }
-        return false
     }
 }

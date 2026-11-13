@@ -10,6 +10,7 @@ struct ChatMessageListView: View {
     let isAwaitingAnswer: Bool
     var style: ChatMessageListStyle = .overlay
     var scrollable: Bool = true
+    var highlightQuery: String = ""
 
     var body: some View {
         if scrollable {
@@ -32,7 +33,7 @@ struct ChatMessageListView: View {
     private var messageStack: some View {
         LazyVStack(alignment: .leading, spacing: 10) {
             ForEach(messages) { message in
-                ChatBubbleView(message: message, style: style)
+                ChatBubbleView(message: message, style: style, highlightQuery: highlightQuery)
                     .id(message.id)
             }
 
@@ -68,6 +69,7 @@ struct ChatMessageListView: View {
 private struct ChatBubbleView: View {
     let message: ChatMessage
     let style: ChatMessageListStyle
+    var highlightQuery: String = ""
 
     private var isRightAligned: Bool {
         message.sender == .me || message.sender == .user
@@ -82,9 +84,7 @@ private struct ChatBubbleView: View {
                     .font(.appCaption.weight(.semibold))
                     .foregroundStyle(labelColor)
 
-                Text(message.text)
-                    .font(.appBody)
-                    .foregroundStyle(textColor)
+                HighlightedText(text: message.text, query: highlightQuery, foreground: textColor)
                     .multilineTextAlignment(isRightAligned ? .trailing : .leading)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 8)

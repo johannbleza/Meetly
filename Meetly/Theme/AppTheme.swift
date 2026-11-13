@@ -3,6 +3,8 @@ import SwiftUI
 enum AppTheme {
     static let activityBarWidth: CGFloat = 48
     static let sidebarWidth: CGFloat = 260
+    static let sidebarMinWidth: CGFloat = 220
+    static let sidebarMaxWidth: CGFloat = 520
     static let rowHeight: CGFloat = 44
 
     static let bgPrimary = Color(red: 0.118, green: 0.118, blue: 0.118)
@@ -100,16 +102,39 @@ struct AppSectionHeader: View {
 struct AppSearchField: View {
     @Binding var text: String
     let placeholder: String
+    var accessory: String? = nil
+    var isFocused: FocusState<Bool>.Binding? = nil
 
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
                 .font(.appCaption)
                 .foregroundStyle(AppTheme.textSecondary)
-            TextField(placeholder, text: $text)
-                .textFieldStyle(.plain)
-                .font(.appBody)
-                .foregroundStyle(AppTheme.textPrimary)
+                .accessibilityHidden(true)
+
+            textField
+
+            if let accessory, !text.isEmpty {
+                Text(accessory)
+                    .font(.appCaption)
+                    .foregroundStyle(AppTheme.textSecondary)
+                    .monospacedDigit()
+                    .accessibilityLabel(accessory == "1" ? "1 match" : "\(accessory) matches")
+            }
+
+            if !text.isEmpty {
+                Button {
+                    text = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.appCaption)
+                        .foregroundStyle(AppTheme.textSecondary)
+                        .frame(width: 16, height: 16)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Clear search")
+            }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
@@ -117,7 +142,33 @@ struct AppSearchField: View {
         .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .stroke(AppTheme.border, lineWidth: 1)
+                .stroke(borderColor, lineWidth: 1)
+        }
+        .onExitCommand {
+            if !text.isEmpty {
+                text = ""
+            } else {
+                isFocused?.wrappedValue = false
+            }
+        }
+    }
+
+    private var borderColor: Color {
+        isFocused?.wrappedValue == true ? AppTheme.accent : AppTheme.border
+    }
+
+    @ViewBuilder
+    private var textField: some View {
+        let field = TextField(placeholder, text: $text)
+            .textFieldStyle(.plain)
+            .font(.appBody)
+            .foregroundStyle(AppTheme.textPrimary)
+            .submitLabel(.search)
+
+        if let isFocused {
+            field.focused(isFocused)
+        } else {
+            field
         }
     }
 }

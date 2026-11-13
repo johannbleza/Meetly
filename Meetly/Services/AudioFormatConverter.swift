@@ -2,7 +2,7 @@ import AVFoundation
 import Foundation
 
 enum AudioFormatConverter {
-    static func rmsEnergy(of buffer: AVAudioPCMBuffer) -> Float {
+    nonisolated static func rmsEnergy(of buffer: AVAudioPCMBuffer) -> Float {
         guard let channelData = buffer.floatChannelData else { return 0 }
         let frameLength = Int(buffer.frameLength)
         guard frameLength > 0 else { return 0 }

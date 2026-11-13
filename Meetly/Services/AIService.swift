@@ -3,28 +3,31 @@ import Foundation
 @MainActor
 final class AIService {
     private let foundationClient = FoundationModelsClient()
-    private let geminiClient = GeminiRESTClient()
 
     var provider: AIProvider {
         AppSettings.aiProvider
     }
 
     var isAvailable: Bool {
-        switch provider {
-        case .appleIntelligence:
-            FoundationModelsClient.isAvailable
-        case .gemini:
-            GeminiRESTClient.isAvailable
+        if let agent = provider.cliAgent {
+            return agent.isInstalled
         }
+        return FoundationModelsClient.isAvailable
     }
 
     var availabilityMessage: String? {
-        switch provider {
-        case .appleIntelligence:
-            FoundationModelsClient.availabilityMessage
-        case .gemini:
-            GeminiRESTClient.availabilityMessage
+        if let agent = provider.cliAgent {
+            return agent.isInstalled ? nil : agent.setupMessage
         }
+        return FoundationModelsClient.availabilityMessage
+    }
+
+    /// The on-device model can't read images, so those use whichever installed tool is available.
+    var imageAgent: CLIAgent? {
+        if let agent = provider.cliAgent {
+            return agent.isInstalled ? agent : nil
+        }
+        return CLIAgent.allCases.first(where: \.isInstalled)
     }
 
     func answerQuestion(
@@ -34,54 +37,51 @@ final class AIService {
         conversationHistory: String? = nil
     ) async throws -> String {
         if !images.isEmpty {
-            try await geminiClient.answerQuestion(
+            guard let agent = imageAgent else {
+                throw AIError.unavailable(Self.imagesUnavailableMessage)
+            }
+            return try await CLIAgentClient(agent: agent).answerQuestion(
                 transcript: transcript,
                 question: question,
                 images: images,
                 conversationHistory: conversationHistory
             )
-        } else {
-            switch provider {
-            case .appleIntelligence:
-                try await foundationClient.answerQuestion(
-                    transcript: transcript,
-                    question: question,
-                    conversationHistory: conversationHistory
-                )
-            case .gemini:
-                try await geminiClient.answerQuestion(
-                    transcript: transcript,
-                    question: question,
-                    conversationHistory: conversationHistory
-                )
-            }
         }
+        if let agent = provider.cliAgent {
+            return try await CLIAgentClient(agent: agent).answerQuestion(
+                transcript: transcript,
+                question: question,
+                conversationHistory: conversationHistory
+            )
+        }
+        return try await foundationClient.answerQuestion(
+            transcript: transcript,
+            question: question,
+            conversationHistory: conversationHistory
+        )
     }
 
     func generateSummary(from transcript: String) async throws -> SummaryOutput {
-        switch provider {
-        case .appleIntelligence:
-            try await foundationClient.generateSummary(from: transcript)
-        case .gemini:
-            try await geminiClient.generateSummary(from: transcript)
+        if let agent = provider.cliAgent {
+            return try await CLIAgentClient(agent: agent).generateSummary(from: transcript)
         }
+        return try await foundationClient.generateSummary(from: transcript)
     }
 
     func generateActionItems(from context: String) async throws -> [String] {
-        switch provider {
-        case .appleIntelligence:
-            try await foundationClient.generateActionItems(from: context)
-        case .gemini:
-            try await geminiClient.generateActionItems(from: context)
+        if let agent = provider.cliAgent {
+            return try await CLIAgentClient(agent: agent).generateActionItems(from: context)
         }
+        return try await foundationClient.generateActionItems(from: context)
     }
 
     func testConnection() async throws {
-        switch provider {
-        case .appleIntelligence:
+        if let agent = provider.cliAgent {
+            try await CLIAgentClient(agent: agent).testConnection()
+        } else {
             try await foundationClient.testConnection()
-        case .gemini:
-            try await geminiClient.testConnection()
         }
     }
+
+    static let imagesUnavailableMessage = "Install and sign in to Claude Code or Codex to ask about images."
 }

@@ -5,12 +5,18 @@ struct MeetingsSidebarView: View {
     @Environment(\.modelContext) private var modelContext
     @Bindable var sessionManager: SessionManager
     let sessions: [MeetingSession]
-    @Binding var searchText: String
+    /// Owned here so typing only redraws the sidebar, not the open meeting.
+    @State private var search = SidebarSearchModel()
     @Binding var selectedSessionID: UUID?
     @Binding var sessionPendingDelete: MeetingSession?
 
-    private var filteredSessions: [MeetingSession] {
-        sessions.filter { $0.matchesSearch(searchText) }
+    /// Pinned meetings (most recently pinned on top) and the rest (newest first).
+    private var filteredGroups: (pinned: [MeetingSession], unpinned: [MeetingSession]) {
+        let matches = search.isSearching ? sessions.filter(search.matches) : sessions
+        let pinned = matches
+            .filter(\.isPinned)
+            .sorted { ($0.pinnedAt ?? .distantPast) > ($1.pinnedAt ?? .distantPast) }
+        return (pinned, matches.filter { !$0.isPinned })
     }
 
     var body: some View {
@@ -34,36 +40,65 @@ struct MeetingsSidebarView: View {
             }
 
             ScrollView {
+                let groups = filteredGroups
                 LazyVStack(spacing: 0) {
-                    if filteredSessions.isEmpty {
+                    if groups.pinned.isEmpty && groups.unpinned.isEmpty {
                         emptyListState
                     } else {
-                        ForEach(filteredSessions) { session in
-                            SessionListRowView(
-                                session: session,
-                                isSelected: selectedSessionID == session.id,
-                                onSelect: {
-                                    selectedSessionID = session.id
-                                },
-                                onArchive: {
-                                    archiveSession(session)
-                                },
-                                onUnarchive: nil,
-                                onExport: {
-                                    MeetingMarkdownExporter.export(session)
-                                },
-                                onDelete: {
-                                    sessionPendingDelete = session
-                                }
-                            )
+                        ForEach(groups.pinned) { session in
+                            sessionRow(session)
+                        }
+
+                        if !groups.pinned.isEmpty && !groups.unpinned.isEmpty {
+                            AppDivider(axis: .horizontal)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                        }
+
+                        ForEach(groups.unpinned) { session in
+                            sessionRow(session)
                         }
                     }
                 }
                 .padding(.bottom, 12)
             }
         }
-        .frame(width: AppTheme.sidebarWidth)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .appPanelBackground(AppTheme.bgSidebar)
+        .onAppear {
+            search.attach(to: modelContext.container)
+        }
+        .onChange(of: sessions.count) { _, _ in
+            search.meetingsChanged()
+        }
+    }
+
+    private func sessionRow(_ session: MeetingSession) -> some View {
+        let isInUse = sessionManager.isInUse(session)
+        return SessionListRowView(
+            session: session,
+            isSelected: selectedSessionID == session.id,
+            onSelect: {
+                selectedSessionID = session.id
+            },
+            onContinue: sessionManager.state == .idle ? {
+                selectedSessionID = session.id
+                Task { await sessionManager.continueMeeting(session) }
+            } : nil,
+            onTogglePin: {
+                SessionActions.togglePin(session, context: modelContext)
+            },
+            onArchive: isInUse ? nil : {
+                archiveSession(session)
+            },
+            onUnarchive: nil,
+            onExport: {
+                MeetingMarkdownExporter.export(session)
+            },
+            onDelete: isInUse ? nil : {
+                sessionPendingDelete = session
+            }
+        )
     }
 
     private var sidebarHeader: some View {
@@ -76,7 +111,7 @@ struct MeetingsSidebarView: View {
 
             ActiveMeetingControls(sessionManager: sessionManager)
 
-            AppSearchField(text: $searchText, placeholder: "Search meetings")
+            AppSearchField(text: $search.text, placeholder: "Search meetings")
         }
         .padding(.horizontal, 12)
         .padding(.top, 16)
@@ -88,11 +123,11 @@ struct MeetingsSidebarView: View {
             Image(systemName: "calendar.badge.clock")
                 .font(.system(size: 24, weight: .light))
                 .foregroundStyle(AppTheme.textSecondary)
-            Text(searchText.isEmpty ? "No meetings yet" : "No matches")
+            Text(search.text.isEmpty ? "No meetings yet" : "No matches")
                 .font(.appBody)
                 .foregroundStyle(AppTheme.textPrimary)
             Text(
-                searchText.isEmpty
+                search.text.isEmpty
                     ? "Start a meeting to capture transcripts and summaries."
                     : "Try a different search term."
             )
@@ -116,6 +151,7 @@ struct MeetingsSidebarView: View {
     }
 
     private func archiveSession(_ session: MeetingSession) {
+        guard !sessionManager.isInUse(session) else { return }
         SessionActions.archive(session, context: modelContext)
         if selectedSessionID == session.id {
             selectedSessionID = nil
@@ -127,7 +163,6 @@ struct MeetingsSidebarView: View {
     MeetingsSidebarView(
         sessionManager: SessionManager(),
         sessions: [MeetingSession(title: "Weekly Sync")],
-        searchText: .constant(""),
         selectedSessionID: .constant(nil),
         sessionPendingDelete: .constant(nil)
     )

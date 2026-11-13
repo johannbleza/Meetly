@@ -4,13 +4,16 @@ import SwiftUI
 struct ArchivedMeetingsView: View {
     @Environment(\.modelContext) private var modelContext
     let sessions: [MeetingSession]
-    @Binding var searchText: String
+    /// The meeting being recorded or summarized, which can't be deleted yet.
+    var inUseSessionID: UUID? = nil
+    /// Owned here so typing only redraws the sidebar, not the open meeting.
+    @State private var search = SidebarSearchModel()
     @Binding var selectedSessionID: UUID?
     @Binding var sessionPendingDelete: MeetingSession?
     @State private var showDeleteAllConfirmation = false
 
     private var filteredSessions: [MeetingSession] {
-        sessions.filter { $0.matchesSearch(searchText) }
+        search.isSearching ? sessions.filter(search.matches) : sessions
     }
 
     var body: some View {
@@ -35,7 +38,7 @@ struct ArchivedMeetingsView: View {
                     }
                 }
 
-                AppSearchField(text: $searchText, placeholder: "Search archived")
+                AppSearchField(text: $search.text, placeholder: "Search archived")
             }
             .padding(.horizontal, 12)
             .padding(.top, 16)
@@ -53,6 +56,7 @@ struct ArchivedMeetingsView: View {
                                 onSelect: {
                                     selectedSessionID = session.id
                                 },
+                                onContinue: nil,
                                 onArchive: nil,
                                 onUnarchive: {
                                     unarchiveSession(session)
@@ -60,7 +64,7 @@ struct ArchivedMeetingsView: View {
                                 onExport: {
                                     MeetingMarkdownExporter.export(session)
                                 },
-                                onDelete: {
+                                onDelete: session.id == inUseSessionID ? nil : {
                                     sessionPendingDelete = session
                                 }
                             )
@@ -70,8 +74,14 @@ struct ArchivedMeetingsView: View {
                 .padding(.bottom, 12)
             }
         }
-        .frame(width: AppTheme.sidebarWidth)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .appPanelBackground(AppTheme.bgSidebar)
+        .onAppear {
+            search.attach(to: modelContext.container)
+        }
+        .onChange(of: sessions.count) { _, _ in
+            search.meetingsChanged()
+        }
         .alert("Delete all archived meetings?", isPresented: $showDeleteAllConfirmation) {
             Button("Cancel", role: .cancel) {}
             Button("Delete All", role: .destructive) {
@@ -87,11 +97,11 @@ struct ArchivedMeetingsView: View {
             Image(systemName: "archivebox")
                 .font(.system(size: 24, weight: .light))
                 .foregroundStyle(AppTheme.textSecondary)
-            Text(searchText.isEmpty ? "No archived meetings" : "No matches")
+            Text(search.text.isEmpty ? "No archived meetings" : "No matches")
                 .font(.appBody)
                 .foregroundStyle(AppTheme.textPrimary)
             Text(
-                searchText.isEmpty
+                search.text.isEmpty
                     ? "Archived meetings will appear here."
                     : "Try a different search term."
             )
@@ -112,9 +122,10 @@ struct ArchivedMeetingsView: View {
     }
 
     private func deleteAllArchived() {
-        SessionActions.deleteAllArchived(filteredSessions, context: modelContext)
+        let deletable = filteredSessions.filter { $0.id != inUseSessionID }
+        SessionActions.deleteAllArchived(deletable, context: modelContext)
         if let selectedSessionID,
-           filteredSessions.contains(where: { $0.id == selectedSessionID }) {
+           deletable.contains(where: { $0.id == selectedSessionID }) {
             self.selectedSessionID = nil
         }
     }
@@ -123,7 +134,6 @@ struct ArchivedMeetingsView: View {
 #Preview {
     ArchivedMeetingsView(
         sessions: [MeetingSession(title: "Old Sync", isArchived: true, archivedAt: .now)],
-        searchText: .constant(""),
         selectedSessionID: .constant(nil),
         sessionPendingDelete: .constant(nil)
     )

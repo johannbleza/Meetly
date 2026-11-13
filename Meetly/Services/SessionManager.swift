@@ -21,10 +21,15 @@ enum OverlayPresentation: Equatable {
 final class SessionManager {
     private(set) var state: MeetingState = .idle
     private(set) var currentSession: MeetingSession?
+
+    /// The meeting being recorded or summarized. It can't be deleted or archived until that
+    /// finishes, because transcripts and the summary are still being written into it.
+    func isInUse(_ session: MeetingSession) -> Bool {
+        currentSession?.id == session.id
+    }
     private(set) var chatMessages: [ChatMessage] = []
-    private(set) var liveSubtitle: String = ""
-    private(set) var liveSubtitleSpeaker: ChatMessageSender?
-    private(set) var isLiveSubtitlePartial = false
+    /// In-progress speech, one caption per speaker, so two people talking don't overwrite each other.
+    private(set) var liveCaptions: [LiveCaption] = []
     private(set) var transcriptHistory: [String] = []
     private(set) var activeQuestion: String?
     private(set) var activeQuestionImages: [ChatImageAttachment] = []
@@ -32,6 +37,7 @@ final class SessionManager {
     /// Overlay Q&A thread; cleared when the overlay chat is closed.
     private(set) var overlayQAMessages: [ChatMessage] = []
     private(set) var isAwaitingAnswer = false
+    private(set) var isCapturingScreen = false
     private(set) var errorMessage: String?
     private(set) var warningMessage: String?
     private(set) var needsSystemAudioPicker = false
@@ -42,20 +48,64 @@ final class SessionManager {
     private(set) var aiProviderSelection: AIProvider = AppSettings.aiProvider
     private(set) var lastCompletedSessionID: UUID?
     var requestedHomePanel: HomePanel?
+    /// A call waiting for the user to choose whether to record it.
+    private(set) var detectedMeetingPrompt: DetectedMeeting?
+    /// When the recording will stop on its own because the call ended.
+    private(set) var autoStopDeadline: Date?
+    /// When the recording will stop on its own because nothing has been heard for a while.
+    private(set) var idleStopDeadline: Date?
 
     private let audioCaptureService = AudioCaptureService()
     private let audioSourceRouter = AudioSourceRouter()
     private let transcriptionService = LiveTranscriptionService()
     private let aiService = AIService()
+    private let meetingDetector = MeetingDetector()
 
     private var modelContext: ModelContext?
     private var partialMessageIDs: [Speaker: UUID] = [:]
+    private var micBleedFilter = MicBleedFilter()
+    private var heldMicFinals: [HeldMicFinal] = []
+    /// Newest meeting audio already covered by a final transcript, on the `systemUptime` clock.
+    private var transcribedSystemSpeechUptime: TimeInterval?
     private var lastFinalTranscriptAt: [Speaker: Date] = [:]
     private var pausedAt: Date?
     private var accumulatedPausedDuration: TimeInterval = 0
     private var overlayQAConversationID = UUID()
+    private var isStartingMeeting = false
+    /// The call this recording stops with. Stays nil for meetings without a call, such as in-person ones.
+    private var autoStopSource: MeetingSource?
+    private var autoStopTask: Task<Void, Never>?
+    private var idleStopTask: Task<Void, Never>?
+    /// Last transcript or user action in the current recording.
+    private var lastRecordingActivityAt = Date()
+    private var isPickingSystemAudio = false
+    /// A call the user declined or stopped recording, so it doesn't prompt again.
+    private var suppressedSource: MeetingSource?
+    private var overlayShownForPrompt = false
+    /// Set while recording into an earlier meeting, so stopping with nothing new can put it back as it was.
+    private var continuation: Continuation?
 
     private let transcriptMergePauseThreshold: TimeInterval = 3
+    /// Meeting audio older than this can't explain a new mic transcript, even if its own transcript is late.
+    private let micBleedOverlapWindow: TimeInterval = 4
+    /// Longest a mic transcript waits for the meeting-audio transcript it might duplicate.
+    private let micHoldDuration: TimeInterval = 5
+    /// Matches `WhisperSegmenter`'s end-of-speech silence: quiet this long means the utterance is over.
+    private let systemUtteranceEndSilence: TimeInterval = 0.7
+    private let autoStopCountdown: TimeInterval = 15
+    /// Longer than the call-ended countdown: nothing else suggests the user has left.
+    private let idleStopCountdown: TimeInterval = 60
+
+    private struct Continuation {
+        let segmentCountAtStart: Int
+        let previousEndedAt: Date?
+        let previousGapDuration: TimeInterval?
+    }
+
+    private struct HeldMicFinal {
+        let text: String
+        let receivedAt: Date
+    }
 
     var isMeetingActive: Bool {
         state == .recording || state == .paused
@@ -93,6 +143,10 @@ final class SessionManager {
 
     func configure(modelContext: ModelContext) {
         self.modelContext = modelContext
+        meetingDetector.onUpdate = { [weak self] in
+            self?.reconcileDetection()
+        }
+        meetingDetector.start()
     }
 
     func openSettings() {
@@ -124,6 +178,12 @@ final class SessionManager {
     }
 
     func hideOverlay() {
+        // Hiding the overlay while it's asking counts as answering "not now".
+        if let detectedMeetingPrompt {
+            suppressedSource = detectedMeetingPrompt.source
+            self.detectedMeetingPrompt = nil
+            overlayShownForPrompt = false
+        }
         overlayPresentation = .hidden
         OverlayPanelController.shared.hide()
     }
@@ -141,7 +201,25 @@ final class SessionManager {
     }
 
     func startMeeting() async {
-        guard state == .idle, let modelContext else { return }
+        await startMeeting(continuing: nil)
+    }
+
+    /// Records more of an earlier meeting into the same session, e.g. after quitting Meetly mid-call.
+    func continueMeeting(_ session: MeetingSession) async {
+        await startMeeting(continuing: session)
+    }
+
+    private func startMeeting(continuing earlierSession: MeetingSession?) async {
+        guard state == .idle, !isStartingMeeting, let modelContext else { return }
+
+        isStartingMeeting = true
+        autoStopSource = meetingDetector.activeMeeting?.source
+        defer {
+            isStartingMeeting = false
+            // The share picker can stay open for a while, and that time isn't silence.
+            noteRecordingActivity()
+            reconcileDetection()
+        }
 
         errorMessage = nil
         warningMessage = nil
@@ -150,9 +228,10 @@ final class SessionManager {
         isMicrophoneMuted = false
         audioSourceRouter.reset()
         chatMessages = []
-        liveSubtitle = ""
-        liveSubtitleSpeaker = nil
-        isLiveSubtitlePartial = false
+        liveCaptions = []
+        micBleedFilter.reset()
+        heldMicFinals = []
+        transcribedSystemSpeechUptime = nil
         transcriptHistory = []
         activeQuestion = nil
         activeQuestionImages = []
@@ -175,18 +254,29 @@ final class SessionManager {
             return
         }
 
-        guard await AppleSpeechChannel.requestAuthorization() else {
-            errorMessage = "Speech recognition permission is required to transcribe meetings."
-            return
+        // Whisper runs without this permission; prepare() requests it if a meeting falls back to Apple Speech.
+        if AppSettings.transcriptionEngine == .appleSpeech {
+            guard await AppleSpeechChannel.requestAuthorization() else {
+                errorMessage = "Speech recognition permission is required to transcribe meetings."
+                return
+            }
         }
 
-        let session = MeetingSession()
-        session.isArchived = false
-        modelContext.insert(session)
+        let session: MeetingSession
+        if let earlierSession {
+            session = earlierSession
+            beginContinuation(of: session)
+        } else {
+            session = MeetingSession()
+            session.isArchived = false
+            modelContext.insert(session)
+            continuation = nil
+        }
         try? modelContext.save()
 
         currentSession = session
-        sessionStartedAt = session.startedAt
+        // Shifted by the gap so the timer picks up where the earlier recording left off.
+        sessionStartedAt = session.startedAt.addingTimeInterval(session.continuationGapDuration ?? 0)
         state = .recording
         overlayPresentation = .expanded
 
@@ -219,6 +309,11 @@ final class SessionManager {
                 await enableSystemAudioAtStart()
             }
 
+            // After the picker, which clears warningMessage on success.
+            if let notice = transcriptionService.fallbackNotice {
+                warningMessage = [warningMessage, notice].compactMap { $0 }.joined(separator: " ")
+            }
+
             MainWindowController.shared.hideMainWindow()
             OverlayPanelController.shared.show()
             OverlayPanelController.shared.updateForPresentation(.expanded)
@@ -230,6 +325,12 @@ final class SessionManager {
 
     func enableSystemAudio() async {
         guard isMeetingActive, state == .recording else { return }
+        noteRecordingActivity()
+        isPickingSystemAudio = true
+        defer {
+            isPickingSystemAudio = false
+            noteRecordingActivity()
+        }
         await enableSystemAudioAtStart(forcePicker: true)
     }
 
@@ -303,13 +404,12 @@ final class SessionManager {
 
     func setMicrophoneMuted(_ muted: Bool) {
         guard isMeetingActive else { return }
+        noteRecordingActivity()
         isMicrophoneMuted = muted
         audioCaptureService.setMicrophoneMuted(muted)
         if muted {
             finalizePartialMessage(for: .me)
-            if liveSubtitleSpeaker == .me {
-                clearLiveSubtitle()
-            }
+            removeCaption(for: .me)
         }
     }
 
@@ -318,8 +418,9 @@ final class SessionManager {
 
         await audioCaptureService.pause()
         await transcriptionService.pause()
+        releaseHeldMicFinals()
         finalizePartialMessages()
-        clearLiveSubtitle()
+        liveCaptions = []
         pausedAt = Date()
         state = .paused
     }
@@ -345,6 +446,7 @@ final class SessionManager {
                 accumulatedPausedDuration += Date().timeIntervalSince(pauseStartedAt)
             }
             pausedAt = nil
+            noteRecordingActivity()
             state = .recording
         } catch {
             errorMessage = error.localizedDescription
@@ -352,14 +454,34 @@ final class SessionManager {
     }
 
     func stopMeeting(saveSummary: Bool = true) async {
+        disarmAutoStop()
+        // State stays .recording during the awaits below, so a poll mustn't see the recording as idle.
+        noteRecordingActivity()
+        suppressedSource = meetingDetector.activeMeeting?.source
+
         await audioCaptureService.stop()
         await transcriptionService.stop()
+        releaseHeldMicFinals()
 
         overlayPresentation = .hidden
         OverlayPanelController.shared.hide()
         MainWindowController.shared.showMainWindow()
 
         if let currentSession {
+            savePartialsIfTranscriptEmpty(in: currentSession)
+        }
+
+        if let currentSession, let continuation,
+           currentSession.segments.count == continuation.segmentCountAtStart {
+            // Nothing new was recorded: leave the earlier meeting, and its summary, untouched.
+            currentSession.endedAt = continuation.previousEndedAt
+            currentSession.continuationGapDuration = continuation.previousGapDuration
+            try? modelContext?.save()
+        } else if let currentSession, !hasTranscript(currentSession) {
+            // No await until currentSession clears below, so a late transcript can't reach the deleted session.
+            modelContext?.delete(currentSession)
+            try? modelContext?.save()
+        } else if let currentSession {
             currentSession.endedAt = .now
             try? modelContext?.save()
 
@@ -375,9 +497,236 @@ final class SessionManager {
         isMicrophoneMuted = false
         state = .idle
         currentSession = nil
+        continuation = nil
         sessionStartedAt = nil
         pausedAt = nil
         accumulatedPausedDuration = 0
+        reconcileDetection()
+    }
+
+    private func beginContinuation(of session: MeetingSession) {
+        let segments = session.segments.sorted { $0.timestamp < $1.timestamp }
+        continuation = Continuation(
+            segmentCountAtStart: session.segments.count,
+            previousEndedAt: session.endedAt,
+            previousGapDuration: session.continuationGapDuration
+        )
+
+        // A meeting cut off by quitting has no end time; its last transcript is the closest thing.
+        let recordingEndedAt = session.endedAt ?? segments.last?.timestamp ?? session.startedAt
+        let gap = max(0, Date().timeIntervalSince(recordingEndedAt))
+        session.continuationGapDuration = (session.continuationGapDuration ?? 0) + gap
+        session.endedAt = nil
+        restoreTranscript(from: segments)
+    }
+
+    /// Shows the earlier transcript in the overlay, which also puts it in the Q&A context.
+    private func restoreTranscript(from segments: [TranscriptSegment]) {
+        var lastTimestamp: [Speaker: Date] = [:]
+        var lastSpeaker: Speaker?
+        for segment in segments {
+            let sender: ChatMessageSender = segment.speaker == .me ? .me : .other
+            let merging = lastSpeaker == segment.speaker
+                && lastTimestamp[segment.speaker].map {
+                    segment.timestamp.timeIntervalSince($0) <= transcriptMergePauseThreshold
+                } ?? false
+            appendToTranscriptHistory(sender: sender, text: segment.text, merging: merging)
+            if merging, let lastIndex = chatMessages.indices.last {
+                chatMessages[lastIndex].text += " \(segment.text)"
+            } else {
+                chatMessages.append(
+                    ChatMessage(
+                        kind: .transcript,
+                        sender: sender,
+                        text: segment.text,
+                        timestamp: segment.timestamp,
+                        isPartial: false
+                    )
+                )
+            }
+            lastTimestamp[segment.speaker] = segment.timestamp
+            lastSpeaker = segment.speaker
+        }
+    }
+
+    private func hasTranscript(_ session: MeetingSession) -> Bool {
+        !MeetingContextBuilder.transcriptText(for: session)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .isEmpty
+    }
+
+    /// Apple Speech can stop before finalizing a short utterance. Without this, a meeting
+    /// whose only words were on screen as captions would be discarded as empty.
+    private func savePartialsIfTranscriptEmpty(in session: MeetingSession) {
+        guard !hasTranscript(session) else { return }
+        for (speaker, messageID) in partialMessageIDs {
+            guard let text = chatMessages.first(where: { $0.id == messageID })?.text,
+                  !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+            commitFinalTranscript(text: text, speaker: speaker, timestamp: .now)
+        }
+    }
+
+    // MARK: - Meeting detection
+
+    func dismissDetectedMeeting() {
+        guard let detectedMeetingPrompt else { return }
+        suppressedSource = detectedMeetingPrompt.source
+        self.detectedMeetingPrompt = nil
+        hideOverlayIfOpenedForPrompt()
+    }
+
+    /// Cancels the countdown. Auto-stop arms again if the call's mic comes back.
+    func keepRecordingAfterCallEnded() {
+        disarmAutoStop()
+    }
+
+    /// Brings prompts and auto-stop in line with the current call. Safe to run at any time.
+    private func reconcileDetection() {
+        let activeMeeting = meetingDetector.activeMeeting
+
+        if let suppressedSource, activeMeeting?.source != suppressedSource {
+            self.suppressedSource = nil
+        }
+
+        switch state {
+        case .idle:
+            // Leave everything in place until startMeeting() has succeeded or failed.
+            guard !isStartingMeeting else { return }
+            disarmAutoStop()
+
+            if let activeMeeting, AppSettings.detectMeetings, activeMeeting.source != suppressedSource {
+                showDetectedMeetingPrompt(activeMeeting)
+            } else {
+                clearDetectedMeetingPrompt()
+                hideOverlayIfOpenedForPrompt()
+            }
+
+        case .recording, .paused:
+            clearDetectedMeetingPrompt()
+            overlayShownForPrompt = false
+
+            // stopMeeting() would strand the picker's caller if it ran while the share picker is open.
+            guard !isStartingMeeting, !isPickingSystemAudio else { return }
+            reconcileIdleStop(activeMeeting: activeMeeting)
+
+            guard AppSettings.autoStopWhenCallEnds else {
+                disarmAutoStop()
+                return
+            }
+
+            if let activeMeeting {
+                cancelAutoStopCountdown()
+                autoStopSource = activeMeeting.source
+            } else if autoStopSource != nil, autoStopTask == nil {
+                beginAutoStopCountdown()
+            }
+
+        case .summarizing:
+            clearDetectedMeetingPrompt()
+            overlayShownForPrompt = false
+            disarmAutoStop()
+        }
+    }
+
+    private func showDetectedMeetingPrompt(_ meeting: DetectedMeeting) {
+        if detectedMeetingPrompt != meeting {
+            detectedMeetingPrompt = meeting
+        }
+        if overlayPresentation == .hidden {
+            showOverlay()
+            overlayShownForPrompt = true
+        }
+    }
+
+    private func clearDetectedMeetingPrompt() {
+        if detectedMeetingPrompt != nil {
+            detectedMeetingPrompt = nil
+        }
+    }
+
+    private func hideOverlayIfOpenedForPrompt() {
+        guard overlayShownForPrompt else { return }
+        overlayShownForPrompt = false
+        hideOverlay()
+    }
+
+    private func beginAutoStopCountdown() {
+        autoStopDeadline = Date().addingTimeInterval(autoStopCountdown)
+        if overlayPresentation == .hidden {
+            showOverlay()
+        }
+
+        autoStopTask = Task { [weak self, autoStopCountdown] in
+            try? await Task.sleep(for: .seconds(autoStopCountdown))
+            guard !Task.isCancelled, let self, self.isMeetingActive else { return }
+            // Otherwise stopMeeting() would cancel this task, and with it the summary it generates.
+            self.autoStopTask = nil
+            await self.stopMeeting()
+        }
+    }
+
+    private func cancelAutoStopCountdown() {
+        autoStopTask?.cancel()
+        autoStopTask = nil
+        // This runs on every poll, and the overlay redraws on any write.
+        if autoStopDeadline != nil {
+            autoStopDeadline = nil
+        }
+    }
+
+    private func disarmAutoStop() {
+        cancelAutoStopCountdown()
+        autoStopSource = nil
+    }
+
+    /// Cancels the countdown and restarts the silence timer.
+    func keepRecordingDespiteSilence() {
+        noteRecordingActivity()
+    }
+
+    private func noteRecordingActivity() {
+        lastRecordingActivityAt = Date()
+        cancelIdleStopCountdown()
+    }
+
+    /// Stops recordings left running. Paused recordings capture nothing, and a detected call
+    /// has its own end signal and can be quiet for long stretches, so neither counts as idle.
+    private func reconcileIdleStop(activeMeeting: DetectedMeeting?) {
+        let limitMinutes = AppSettings.idleRecordingStopMinutes
+        guard state == .recording,
+              activeMeeting == nil,
+              limitMinutes > 0,
+              Date().timeIntervalSince(lastRecordingActivityAt) >= TimeInterval(limitMinutes) * 60 else {
+            cancelIdleStopCountdown()
+            return
+        }
+        if idleStopTask == nil {
+            beginIdleStopCountdown()
+        }
+    }
+
+    private func beginIdleStopCountdown() {
+        idleStopDeadline = Date().addingTimeInterval(idleStopCountdown)
+        if overlayPresentation == .hidden {
+            showOverlay()
+        }
+
+        idleStopTask = Task { [weak self, idleStopCountdown] in
+            try? await Task.sleep(for: .seconds(idleStopCountdown))
+            guard !Task.isCancelled, let self, self.state == .recording else { return }
+            // Otherwise stopMeeting() would cancel this task, and with it the summary it generates.
+            self.idleStopTask = nil
+            await self.stopMeeting()
+        }
+    }
+
+    private func cancelIdleStopCountdown() {
+        idleStopTask?.cancel()
+        idleStopTask = nil
+        // This runs on every poll and transcript, and the overlay redraws on any write.
+        if idleStopDeadline != nil {
+            idleStopDeadline = nil
+        }
     }
 
     func dismissActiveAnswer() {
@@ -392,6 +741,7 @@ final class SessionManager {
     func askQuestion(_ text: String, images: [ChatImageAttachment] = []) async {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty || !images.isEmpty, isMeetingActive else { return }
+        noteRecordingActivity()
 
         let question = trimmed.isEmpty
             ? (images.count > 1
@@ -401,6 +751,8 @@ final class SessionManager {
 
         let conversationID = overlayQAConversationID
         let conversationHistory = MeetingContextBuilder.conversationHistoryText(from: overlayQAMessages)
+        let askedSession = currentSession
+        let askedAt = Date.now
         let userMessage = ChatMessage(
             kind: .userQuestion,
             sender: .user,
@@ -413,8 +765,8 @@ final class SessionManager {
         activeQuestionImages = images
         activeAnswer = nil
 
-        if !images.isEmpty, !GeminiRESTClient.isAvailable {
-            let message = "Add your Gemini API key in Settings to ask about images."
+        if !images.isEmpty, aiService.imageAgent == nil {
+            let message = AIService.imagesUnavailableMessage
             errorMessage = message
             appendOverlayAnswer(message, conversationID: conversationID)
             return
@@ -438,6 +790,14 @@ final class SessionManager {
                 images: images,
                 conversationHistory: conversationHistory
             )
+            // Saved even if the overlay chat was closed meanwhile, so it shows in the meeting's history.
+            askedSession?.appendQAExchange(
+                question: question,
+                askedAt: askedAt,
+                imageCount: images.count,
+                answer: answer,
+                context: modelContext
+            )
             appendOverlayAnswer(answer, conversationID: conversationID)
         } catch {
             errorMessage = error.localizedDescription
@@ -452,6 +812,73 @@ final class SessionManager {
         }
     }
 
+    /// Captures the display shared for meeting audio, opening the share picker first if there
+    /// isn't one yet, or if the shared display isn't the screen the user is on. Failures are shown in the overlay chat and return nil.
+    func captureScreenForQuestion() async -> ChatImageAttachment? {
+        guard state == .recording, !isAwaitingAnswer, !isCapturingScreen else { return nil }
+        isCapturingScreen = true
+        defer { isCapturingScreen = false }
+        noteRecordingActivity()
+
+        // Read before any picker can move the pointer: the screen the user clicked from.
+        let targetDisplayID = DisplayLocator.displayUnderPointer()
+
+        if !audioCaptureService.canCaptureScreenshot {
+            await enableSystemAudio()
+            guard audioCaptureService.canCaptureScreenshot else {
+                showScreenCaptureFailure("Choose a display in the share picker so Meetly can capture your screen.")
+                return nil
+            }
+        } else if let targetDisplayID,
+                  let capturedDisplayID = audioCaptureService.capturedDisplayID,
+                  capturedDisplayID != targetDisplayID {
+            // The stream only covers the display picked for meeting audio, and another display
+            // can't be captured without the picker's approval. Ask to switch it to this screen.
+            isPickingSystemAudio = true
+            prepareForContentSharingPicker()
+            do {
+                try await audioCaptureService.changeCapturedDisplayViaPicker()
+            } catch {
+                isPickingSystemAudio = false
+                noteRecordingActivity()
+                showScreenCaptureFailure(
+                    "Meetly can only capture the display shared for meeting audio. Choose this screen in the share picker to capture it."
+                )
+                return nil
+            }
+            isPickingSystemAudio = false
+            noteRecordingActivity()
+        }
+
+        OverlayPanelController.shared.setHiddenForCapture(true)
+        defer { OverlayPanelController.shared.setHiddenForCapture(false) }
+        // Give the window server time to redraw without the overlay or the share picker.
+        try? await Task.sleep(for: .milliseconds(150))
+
+        do {
+            let image = try await audioCaptureService.captureScreenshot()
+            guard let attachment = ClipboardImageReader.attachment(from: image) else {
+                showScreenCaptureFailure("Couldn't process the screenshot.")
+                return nil
+            }
+            return attachment
+        } catch {
+            showScreenCaptureFailure("Couldn't capture your screen: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    private func showScreenCaptureFailure(_ message: String) {
+        let question = "Ask about my screen"
+        let userMessage = ChatMessage(kind: .userQuestion, sender: .user, text: question)
+        chatMessages.append(userMessage)
+        overlayQAMessages.append(userMessage)
+        activeQuestion = question
+        activeQuestionImages = []
+        activeAnswer = nil
+        appendOverlayAnswer(message, conversationID: overlayQAConversationID)
+    }
+
     private func appendOverlayAnswer(_ text: String, conversationID: UUID) {
         guard conversationID == overlayQAConversationID else { return }
         activeAnswer = text
@@ -462,14 +889,17 @@ final class SessionManager {
 
     private func handlePartialTranscript(text: String, speaker: Speaker) {
         let sender: ChatMessageSender = speaker == .me ? .me : .other
-        guard text != "…" else {
-            isLiveSubtitlePartial = true
+        guard text != "…" else { return }
+        noteRecordingActivity()
+
+        if speaker == .other {
+            micBleedFilter.recordSystemText(text, isFinal: false)
+            discardMicBleed()
+        } else if shouldHideMicPartial(text) {
             return
         }
 
-        liveSubtitle = text
-        liveSubtitleSpeaker = sender
-        isLiveSubtitlePartial = true
+        showCaption(text, for: sender)
 
         if let existingID = partialMessageIDs[speaker],
            let index = chatMessages.firstIndex(where: { $0.id == existingID }) {
@@ -488,15 +918,114 @@ final class SessionManager {
     }
 
     private func handleFinalTranscript(text: String, speaker: Speaker) {
+        noteRecordingActivity()
+
+        switch speaker {
+        case .other:
+            micBleedFilter.recordSystemText(text, isFinal: true)
+            discardMicBleed()
+            commitFinalTranscript(text: text, speaker: .other, timestamp: .now)
+            markSystemTranscriptCaughtUpIfQuiet()
+        case .me:
+            if micBleedFilter.isBleed(text) {
+                discardMicPartial()
+            } else if isSystemTranscriptBehind {
+                // The transcript this might duplicate hasn't been decoded yet. Wait for it
+                // rather than show a "You" line that would then have to be taken back.
+                discardMicPartial()
+                holdMicFinal(text)
+            } else {
+                commitFinalTranscript(text: text, speaker: .me, timestamp: .now)
+            }
+        }
+    }
+
+    /// Mic captions wait while meeting audio is untranscribed, unless the user was already
+    /// talking: speaker bleed starts with the meeting audio, never ahead of it.
+    private func shouldHideMicPartial(_ text: String) -> Bool {
+        if micBleedFilter.isBleed(text) {
+            discardMicPartial()
+            return true
+        }
+        return partialMessageIDs[.me] == nil && isSystemTranscriptBehind
+    }
+
+    private var isSystemTranscriptBehind: Bool {
+        guard let lastSpeech = audioSourceRouter.lastSystemSpeechUptime,
+              ProcessInfo.processInfo.systemUptime - lastSpeech <= micBleedOverlapWindow else {
+            return false
+        }
+        guard let transcribedSystemSpeechUptime else { return true }
+        return lastSpeech > transcribedSystemSpeechUptime
+    }
+
+    /// Once a final covers all the meeting audio heard so far, anything still held didn't match it,
+    /// so it's the user's own speech.
+    private func markSystemTranscriptCaughtUpIfQuiet() {
+        guard let lastSpeech = audioSourceRouter.lastSystemSpeechUptime,
+              ProcessInfo.processInfo.systemUptime - lastSpeech >= systemUtteranceEndSilence else {
+            return
+        }
+        transcribedSystemSpeechUptime = lastSpeech
+        releaseHeldMicFinals()
+    }
+
+    private func discardMicBleed() {
+        heldMicFinals.removeAll { micBleedFilter.isBleed($0.text) }
+        if let caption = liveCaptions.first(where: { $0.speaker == .me }),
+           micBleedFilter.isBleed(caption.text) {
+            discardMicPartial()
+        }
+    }
+
+    private func discardMicPartial() {
+        if let id = partialMessageIDs[.me] {
+            chatMessages.removeAll { $0.id == id }
+        }
+        partialMessageIDs[.me] = nil
+        removeCaption(for: .me)
+    }
+
+    private func holdMicFinal(_ text: String) {
+        let held = HeldMicFinal(text: text, receivedAt: .now)
+        heldMicFinals.append(held)
+        Task { [weak self, micHoldDuration] in
+            try? await Task.sleep(for: .seconds(micHoldDuration))
+            self?.releaseExpiredMicFinals()
+        }
+    }
+
+    private func releaseExpiredMicFinals() {
+        let expired = heldMicFinals.filter { Date().timeIntervalSince($0.receivedAt) >= micHoldDuration }
+        heldMicFinals.removeAll { Date().timeIntervalSince($0.receivedAt) >= micHoldDuration }
+        expired.forEach { commitFinalTranscript(text: $0.text, speaker: .me, timestamp: $0.receivedAt) }
+    }
+
+    private func releaseHeldMicFinals() {
+        let held = heldMicFinals
+        heldMicFinals = []
+        held.forEach { commitFinalTranscript(text: $0.text, speaker: .me, timestamp: $0.receivedAt) }
+    }
+
+    private func showCaption(_ text: String, for sender: ChatMessageSender) {
+        if let index = liveCaptions.firstIndex(where: { $0.speaker == sender }) {
+            liveCaptions[index].text = text
+        } else {
+            liveCaptions.append(LiveCaption(speaker: sender, text: text))
+        }
+    }
+
+    private func removeCaption(for sender: ChatMessageSender) {
+        liveCaptions.removeAll { $0.speaker == sender }
+    }
+
+    private func commitFinalTranscript(text: String, speaker: Speaker, timestamp: Date) {
         guard let currentSession, let modelContext else { return }
 
         let sender: ChatMessageSender = speaker == .me ? .me : .other
         let merging = shouldMergeTranscript(with: speaker)
 
-        liveSubtitle = text
-        liveSubtitleSpeaker = sender
-        isLiveSubtitlePartial = false
-
+        removeCaption(for: sender)
         appendToTranscriptHistory(sender: sender, text: text, merging: merging)
         mergeOrAppendFinalTranscript(text: text, sender: sender, merging: merging)
 
@@ -505,6 +1034,7 @@ final class SessionManager {
 
         let segment = TranscriptSegment(
             text: text,
+            timestamp: timestamp,
             speaker: speaker,
             isFinal: true,
             session: currentSession
@@ -565,12 +1095,6 @@ final class SessionManager {
         chatMessages.lastIndex(where: { $0.kind == .transcript && $0.isPartial && $0.sender == sender })
     }
 
-    private func clearLiveSubtitle() {
-        liveSubtitle = ""
-        liveSubtitleSpeaker = nil
-        isLiveSubtitlePartial = false
-    }
-
     private func finalizePartialMessages() {
         for index in chatMessages.indices where chatMessages[index].isPartial {
             chatMessages[index].isPartial = false
@@ -595,14 +1119,6 @@ final class SessionManager {
             lines = transcriptHistory
         }
 
-        if !liveSubtitle.isEmpty, liveSubtitle != "…" {
-            let label = liveSubtitleSpeaker?.label ?? "Speaker"
-            let liveLine = "[\(label)] \(liveSubtitle)"
-            if lines.last != liveLine {
-                lines.append(liveLine)
-            }
-        }
-
         return lines.joined(separator: "\n")
     }
 
@@ -615,6 +1131,11 @@ final class SessionManager {
 
         do {
             let output = try await aiService.generateSummary(from: transcript)
+            // A continued meeting already has one; its action items go with it via cascade.
+            if let existing = session.summary {
+                session.summary = nil
+                modelContext.delete(existing)
+            }
             let summary = MeetingSummary(
                 summaryText: output.summary,
                 keyPoints: output.keyPoints,

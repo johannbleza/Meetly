@@ -1,9 +1,11 @@
 import Foundation
+import SwiftData
 
 @MainActor
 @Observable
 final class MeetingQAController {
-    private(set) var messages: [ChatMessage] = []
+    /// The in-flight question and any error replies, which aren't saved.
+    private var pendingMessages: [ChatMessage] = []
     private(set) var isAwaitingAnswer = false
     private(set) var errorMessage: String?
 
@@ -13,6 +15,11 @@ final class MeetingQAController {
 
     init(session: MeetingSession) {
         self.session = session
+    }
+
+    /// Saved history (including questions asked in the overlay during the call), then unsaved messages.
+    var messages: [ChatMessage] {
+        session.sortedQAMessages.map(\.chatMessage) + pendingMessages
     }
 
     var isAvailable: Bool {
@@ -35,15 +42,16 @@ final class MeetingQAController {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !isAwaitingAnswer else { return }
 
-        messages.append(
-            ChatMessage(kind: .userQuestion, sender: .user, text: trimmed)
-        )
+        let history = messages
+        let askedAt = Date.now
+        let questionMessage = ChatMessage(kind: .userQuestion, sender: .user, text: trimmed, timestamp: askedAt)
+        pendingMessages.append(questionMessage)
         errorMessage = nil
 
         guard hasContent else {
             let message = "This meeting has no transcript or summary to ask about yet."
             errorMessage = message
-            messages.append(
+            pendingMessages.append(
                 ChatMessage(kind: .assistantAnswer, sender: .assistant, text: message)
             )
             return
@@ -53,7 +61,7 @@ final class MeetingQAController {
             let message = aiService.availabilityMessage
                 ?? "Configure \(aiService.provider.label) in Settings before asking questions."
             errorMessage = message
-            messages.append(
+            pendingMessages.append(
                 ChatMessage(kind: .assistantAnswer, sender: .assistant, text: message)
             )
             return
@@ -65,20 +73,24 @@ final class MeetingQAController {
         do {
             let context = MeetingContextBuilder.context(for: session)
             let conversationHistory = MeetingContextBuilder.conversationHistoryText(
-                from: Array(messages.dropLast())
+                from: history
             )
             let answer = try await aiService.answerQuestion(
                 transcript: context,
                 question: trimmed,
                 conversationHistory: conversationHistory
             )
-            messages.append(
-                ChatMessage(kind: .assistantAnswer, sender: .assistant, text: answer)
+            pendingMessages.removeAll { $0.id == questionMessage.id }
+            session.appendQAExchange(
+                question: trimmed,
+                askedAt: askedAt,
+                answer: answer,
+                context: session.modelContext
             )
         } catch {
             let message = "Sorry, I couldn't answer that: \(error.localizedDescription)"
             errorMessage = error.localizedDescription
-            messages.append(
+            pendingMessages.append(
                 ChatMessage(kind: .assistantAnswer, sender: .assistant, text: message)
             )
         }

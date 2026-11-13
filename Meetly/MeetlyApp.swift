@@ -10,16 +10,25 @@ import SwiftUI
 @main
 struct MeetlyApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @State private var sessionManager = SessionManager()
+    @State private var sessionManager: SessionManager
+    private let sharedModelContainer: ModelContainer
 
-    var sharedModelContainer: ModelContainer = {
+    init() {
+        LegacyContainerMigration.runIfNeeded()
+        _sessionManager = State(initialValue: SessionManager())
+        sharedModelContainer = Self.makeModelContainer()
+    }
+
+    private static func makeModelContainer() -> ModelContainer {
         let schema = Schema([
             MeetingSession.self,
             TranscriptSegment.self,
             MeetingSummary.self,
             ActionItem.self,
+            QAMessage.self,
         ])
-        let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
+        try? FileManager.default.createDirectory(at: AppStoragePaths.root, withIntermediateDirectories: true)
+        let configuration = ModelConfiguration(schema: schema, url: AppStoragePaths.store)
 
         do {
             return try ModelContainer(for: schema, configurations: [configuration])
@@ -32,7 +41,7 @@ struct MeetlyApp: App {
                 fatalError("Could not create ModelContainer: \(error)")
             }
         }
-    }()
+    }
 
     private static func removePersistentStore(at url: URL) {
         let fileManager = FileManager.default
@@ -50,9 +59,6 @@ struct MeetlyApp: App {
         WindowGroup {
             ContentView(sessionManager: sessionManager)
                 .preferredColorScheme(.dark)
-                .onAppear {
-                    GeminiKeyStore.migrateFromDotEnvIfNeeded()
-                }
         }
         .modelContainer(sharedModelContainer)
         .defaultSize(width: 1100, height: 720)
@@ -61,7 +67,12 @@ struct MeetlyApp: App {
             MenuBarContentView(sessionManager: sessionManager)
                 .modelContainer(sharedModelContainer)
         } label: {
+            // The menu bar label renders even with no window open, such as after a login launch.
             MenuBarIconLabel(sessionManager: sessionManager)
+                .task {
+                    OverlayPanelController.shared.configure(sessionManager: sessionManager)
+                    sessionManager.configure(modelContext: sharedModelContainer.mainContext)
+                }
         }
         .menuBarExtraStyle(.menu)
     }
@@ -70,5 +81,8 @@ struct MeetlyApp: App {
 private final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         ScreenShareExclusion.applyToAllWindows()
+        Task.detached(priority: .utility) {
+            await CLIEnvironment.loadShellPathIfNeeded()
+        }
     }
 }

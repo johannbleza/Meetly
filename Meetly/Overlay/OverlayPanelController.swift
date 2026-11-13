@@ -18,6 +18,12 @@ private final class KeyablePanel: NSPanel {
     }
 }
 
+/// Lets the first click act on a button, so the overlay works without first becoming active
+/// while the user is in their call.
+private final class FirstMouseHostingView<Content: View>: NSHostingView<Content> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
 @MainActor
 final class OverlayPanelController {
     static let shared = OverlayPanelController()
@@ -70,6 +76,11 @@ final class OverlayPanelController {
         }
     }
 
+    /// Keeps the overlay out of screenshots. Uses alpha so the panel keeps its place and focus.
+    func setHiddenForCapture(_ isHidden: Bool) {
+        panel?.alphaValue = isHidden ? 0 : 1
+    }
+
     func updateForPresentation(_ presentation: OverlayPresentation, maxExpandedHeight: CGFloat? = nil) {
         // Fold/expand is purely a SwiftUI animation; the window never resizes.
         self.presentation = presentation
@@ -82,7 +93,7 @@ final class OverlayPanelController {
             .frame(width: OverlayGlassStyle.panelWidth)
             .preferredColorScheme(.dark)
 
-        let hostingView = NSHostingView(rootView: contentView)
+        let hostingView = FirstMouseHostingView(rootView: contentView)
         hostingView.translatesAutoresizingMaskIntoConstraints = false
         // The window is a fixed-size canvas; SwiftUI sizes the visible panel.
         hostingView.sizingOptions = []

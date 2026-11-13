@@ -1,21 +1,28 @@
-import AppKit
+import ServiceManagement
 import SwiftUI
-import UniformTypeIdentifiers
 
 struct SettingsView: View {
+    @State private var transcriptionEngine = AppSettings.transcriptionEngine
+    @State private var whisperModel = AppSettings.whisperModel
     @State private var aiProvider = AppSettings.aiProvider
-    @State private var textModel = AppSettings.geminiTextModel
-    @State private var geminiWebSearchEnabled = AppSettings.geminiWebSearchEnabled
+    @State private var claudeModel = AppSettings.claudeModel
+    @State private var codexModel = AppSettings.codexModel
+    @State private var aiWebSearchEnabled = AppSettings.aiWebSearchEnabled
     @State private var overlayOpacity = AppSettings.overlayOpacity
     @State private var hideFromScreenShare = AppSettings.hideFromScreenShare
     @State private var captureMeetingAudioByDefault = AppSettings.captureMeetingAudioByDefault
-    @State private var apiKeyDraft = ""
-    @State private var hasStoredAPIKey = GeminiConfig.hasAPIKey
+    @State private var detectMeetings = AppSettings.detectMeetings
+    @State private var autoStopWhenCallEnds = AppSettings.autoStopWhenCallEnds
+    @State private var idleRecordingStopMinutes = AppSettings.idleRecordingStopMinutes
+    @State private var openAtLogin = SMAppService.mainApp.status == .enabled
+    @State private var openAtLoginError: String?
     @State private var statusMessage: String?
     @State private var isTesting = false
 
     var body: some View {
         Form {
+            transcriptionSection
+
             Section("AI Provider") {
                 Picker("Provider", selection: $aiProvider) {
                     ForEach(AIProvider.allCases) { provider in
@@ -31,16 +38,12 @@ struct SettingsView: View {
                 Text(aiProvider.settingsDescription)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-
-                Text("Live transcription always runs on-device with Apple Speech.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
 
-            if aiProvider == .appleIntelligence {
-                appleIntelligenceSection
+            if let agent = aiProvider.cliAgent {
+                cliAgentSection(agent)
             } else {
-                geminiSection
+                appleIntelligenceSection
             }
 
             Section("Meeting Audio") {
@@ -64,6 +67,8 @@ struct SettingsView: View {
                     ScreenCapturePermission.openSystemSettings()
                 }
             }
+
+            meetingDetectionSection
 
             Section("Overlay") {
                 Slider(value: $overlayOpacity, in: 0.6...1.0) {
@@ -89,8 +94,141 @@ struct SettingsView: View {
         .background(AppTheme.bgSidebar)
         .navigationTitle("Settings")
         .frame(minWidth: 460, minHeight: 520)
-        .onAppear {
-            refreshAPIKeyStatus()
+    }
+
+    private var meetingDetectionSection: some View {
+        Section("Meeting Detection") {
+            Toggle("Detect calls in any app or browser", isOn: $detectMeetings)
+                .onChange(of: detectMeetings) { _, newValue in
+                    AppSettings.detectMeetings = newValue
+                }
+
+            Toggle("Stop recording when the call ends", isOn: $autoStopWhenCallEnds)
+                .onChange(of: autoStopWhenCallEnds) { _, newValue in
+                    AppSettings.autoStopWhenCallEnds = newValue
+                }
+
+            Picker("Stop recording after no speech for", selection: $idleRecordingStopMinutes) {
+                Text("15 minutes").tag(15)
+                Text("30 minutes").tag(30)
+                Text("1 hour").tag(60)
+                Text("Never").tag(0)
+            }
+            .onChange(of: idleRecordingStopMinutes) { _, newValue in
+                AppSettings.idleRecordingStopMinutes = newValue
+            }
+
+            Toggle("Open Meetly at login", isOn: Binding(
+                get: { openAtLogin },
+                set: { setOpenAtLogin($0) }
+            ))
+
+            if let openAtLoginError {
+                Text(openAtLoginError)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+
+            Text("Meetly notices calls by which app is using your microphone, with no calendar access. While a browser is using the mic, Meetly checks its open tabs for a meeting link, which macOS asks you to allow once per browser. Tab addresses are never saved. Detection only works while Meetly is open.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Text("A silent recording shows a one-minute countdown before it stops and is summarized. This doesn't apply while a recording is paused or during a detected call.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func setOpenAtLogin(_ enabled: Bool) {
+        do {
+            if enabled {
+                try SMAppService.mainApp.register()
+            } else {
+                try SMAppService.mainApp.unregister()
+            }
+            openAtLoginError = nil
+        } catch {
+            openAtLoginError = error.localizedDescription
+        }
+        openAtLogin = SMAppService.mainApp.status == .enabled
+    }
+
+    @ViewBuilder
+    private var transcriptionSection: some View {
+        Section("Transcription") {
+            Picker("Engine", selection: $transcriptionEngine) {
+                ForEach(TranscriptionEngine.allCases) { engine in
+                    Text(engine.label).tag(engine)
+                }
+            }
+            .pickerStyle(.segmented)
+            .onChange(of: transcriptionEngine) { _, newValue in
+                AppSettings.transcriptionEngine = newValue
+            }
+
+            Text(transcriptionEngine.settingsDescription)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            if transcriptionEngine == .whisper {
+                Picker("Model", selection: $whisperModel) {
+                    ForEach(WhisperModel.allCases) { model in
+                        Text(model.label).tag(model)
+                    }
+                }
+                .onChange(of: whisperModel) { _, newValue in
+                    AppSettings.whisperModel = newValue
+                }
+
+                whisperModelStatus
+            }
+
+            Text("Changes apply to your next meeting.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private var whisperModelStatus: some View {
+        let store = WhisperModelStore.shared
+
+        if store.installingModel == whisperModel, let phase = store.installPhase {
+            switch phase {
+            case .downloading(let fraction):
+                ProgressView("Downloading model…", value: fraction)
+
+                Button("Cancel") {
+                    store.cancelInstall()
+                }
+            case .optimizing:
+                ProgressView("Optimizing for this Mac. This can take a few minutes…")
+            }
+        } else if store.isInstalled(whisperModel) {
+            Label("Model ready", systemImage: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+
+            Button("Remove Download") {
+                store.remove(whisperModel)
+            }
+        } else {
+            Label("Download this model to use it", systemImage: "arrow.down.circle")
+                .foregroundStyle(.orange)
+
+            Button("Download Model") {
+                store.install(whisperModel)
+            }
+            .disabled(store.installingModel != nil)
+
+            Text("Until it's ready, meetings use Apple Speech.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+
+        if let error = store.lastError {
+            Text(error)
+                .font(.caption)
+                .foregroundStyle(.red)
         }
     }
 
@@ -117,50 +255,41 @@ struct SettingsView: View {
     }
 
     @ViewBuilder
-    private var geminiSection: some View {
-        Section("Gemini API") {
-            if hasStoredAPIKey {
-                Label("API key saved", systemImage: "checkmark.circle.fill")
+    private func cliAgentSection(_ agent: CLIAgent) -> some View {
+        Section(agent.label) {
+            if agent.isInstalled {
+                Label("Found the `\(agent.command)` command-line tool", systemImage: "checkmark.circle.fill")
                     .foregroundStyle(.green)
             } else {
-                Label("Add your Gemini API key", systemImage: "exclamationmark.triangle.fill")
+                Label(agent.setupMessage, systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
             }
 
-            SecureField(hasStoredAPIKey ? "Enter a new key to replace the saved one" : "Gemini API key", text: $apiKeyDraft)
-                .textFieldStyle(.roundedBorder)
-
-            HStack {
-                Button("Save API Key") {
-                    saveAPIKey()
-                }
-                .disabled(apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-
-                Button("Import .env…") {
-                    importEnvFile()
-                }
+            switch agent {
+            case .claude:
+                TextField("Model", text: $claudeModel)
+                    .help("A model name or alias such as sonnet, opus, or haiku.")
+                    .onChange(of: claudeModel) { _, newValue in
+                        AppSettings.claudeModel = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                    }
+            case .codex:
+                TextField("Model", text: $codexModel, prompt: Text("Codex default"))
+                    .help("Leave empty to use the default model for your Codex plan.")
+                    .onChange(of: codexModel) { _, newValue in
+                        AppSettings.codexModel = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                    }
             }
 
-            Text("Meetly runs in the App Sandbox, so it cannot read `.env` from the project folder automatically. Paste your key here or import a `.env` file once.")
+            Toggle("Allow web search for Q&A", isOn: $aiWebSearchEnabled)
+                .onChange(of: aiWebSearchEnabled) { _, newValue in
+                    AppSettings.aiWebSearchEnabled = newValue
+                }
+
+            Text("Lets \(agent.label) search the web when a question needs current facts or knowledge outside the meeting transcript. Summaries stay transcript-only.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            TextField("Text model", text: $textModel)
-                .help("Default: gemini-2.5-flash")
-                .onChange(of: textModel) { _, newValue in
-                    AppSettings.geminiTextModel = newValue
-                }
-
-            Toggle("Allow web search for Q&A", isOn: $geminiWebSearchEnabled)
-                .onChange(of: geminiWebSearchEnabled) { _, newValue in
-                    AppSettings.geminiWebSearchEnabled = newValue
-                }
-
-            Text("Lets Gemini use Google Search when a question needs current facts or knowledge outside the meeting transcript. Summaries stay transcript-only.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            testConnectionButton(isEnabled: hasStoredAPIKey || !apiKeyDraft.isEmpty)
+            testConnectionButton(isEnabled: agent.isInstalled)
         }
     }
 
@@ -185,53 +314,7 @@ struct SettingsView: View {
         }
     }
 
-    private func saveAPIKey() {
-        let trimmed = apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-
-        GeminiKeyStore.setAPIKey(trimmed)
-        apiKeyDraft = ""
-        refreshAPIKeyStatus()
-        statusMessage = "API key saved."
-    }
-
-    private func importEnvFile() {
-        let panel = NSOpenPanel()
-        panel.title = "Import Gemini API Key"
-        panel.message = "Choose a .env file containing GEMINI_API_KEY."
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
-        panel.allowedContentTypes = [.plainText, .data]
-        panel.prompt = "Import"
-
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-
-        guard let contents = try? String(contentsOf: url, encoding: .utf8),
-              let key = DotEnv.value(for: "GEMINI_API_KEY", in: contents)?
-                .trimmingCharacters(in: .whitespacesAndNewlines),
-              !key.isEmpty else {
-            statusMessage = "No GEMINI_API_KEY found in that file."
-            return
-        }
-
-        GeminiKeyStore.setAPIKey(key)
-        apiKeyDraft = ""
-        refreshAPIKeyStatus()
-        statusMessage = "Imported API key from \(url.lastPathComponent)."
-    }
-
-    private func refreshAPIKeyStatus() {
-        hasStoredAPIKey = GeminiConfig.hasAPIKey
-    }
-
     private func testConnection() async {
-        if !apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            GeminiKeyStore.setAPIKey(apiKeyDraft)
-            apiKeyDraft = ""
-            refreshAPIKeyStatus()
-        }
-
         isTesting = true
         defer { isTesting = false }
 

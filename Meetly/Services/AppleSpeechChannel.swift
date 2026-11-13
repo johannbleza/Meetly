@@ -23,12 +23,13 @@ enum AppleSpeechError: LocalizedError {
 }
 
 /// Feeds PCM off the main actor; result callbacks are delivered on the MainActor.
-final class AppleSpeechChannel: @unchecked Sendable {
+final class AppleSpeechChannel: TranscriptionChannel, @unchecked Sendable {
     private static let liveReportingOptions: Set<SpeechTranscriber.ReportingOption> = [
         .volatileResults,
         .fastResults,
     ]
 
+    private let locale: Locale
     private let stateLock = NSLock()
     private var analyzer: SpeechAnalyzer?
     private var transcriber: SpeechTranscriber?
@@ -38,6 +39,10 @@ final class AppleSpeechChannel: @unchecked Sendable {
 
     var onPartialResult: ((String) -> Void)?
     var onFinalResult: ((String) -> Void)?
+
+    init(locale: Locale) {
+        self.locale = locale
+    }
 
     static func requestAuthorization() async -> Bool {
         await withCheckedContinuation { continuation in
@@ -103,7 +108,7 @@ final class AppleSpeechChannel: @unchecked Sendable {
         _ = await AssetInventory.release(reservedLocale: locale)
     }
 
-    func start(locale: Locale) async throws {
+    func start() async throws {
         let transcriber = Self.makeLiveTranscriber(locale: locale)
 
         guard let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber]) else {

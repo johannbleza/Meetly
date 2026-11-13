@@ -83,6 +83,24 @@ final class AudioCaptureService {
         }
     }
 
+    var canCaptureScreenshot: Bool {
+        systemAudioCapture.canCaptureScreenshot
+    }
+
+    var capturedDisplayID: CGDirectDisplayID? {
+        systemAudioCapture.capturedDisplayID
+    }
+
+    /// Reopens the share picker so the running stream can move to another display.
+    func changeCapturedDisplayViaPicker() async throws {
+        try await systemAudioCapture.changeDisplayViaPicker()
+    }
+
+    /// Captures the display chosen in the share picker. Needs meeting audio to be running.
+    func captureScreenshot() async throws -> CGImage {
+        try await systemAudioCapture.captureScreenshot()
+    }
+
     func pause() async {
         microphoneCapture.stop()
         await systemAudioCapture.stop()

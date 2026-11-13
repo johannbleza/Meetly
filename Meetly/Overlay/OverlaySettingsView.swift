@@ -14,7 +14,7 @@ struct OverlaySettingsView: View {
                         Text(provider.label).tag(provider)
                     }
                 }
-                .pickerStyle(.segmented)
+                .pickerStyle(.menu)
                 .onChange(of: aiProvider) { _, newValue in
                     AppSettings.aiProvider = newValue
                     sessionManager.setAIProvider(newValue)

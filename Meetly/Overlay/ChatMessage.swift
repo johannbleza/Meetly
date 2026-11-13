@@ -34,6 +34,13 @@ enum ChatMessageSender: Equatable {
     }
 }
 
+struct LiveCaption: Identifiable, Equatable {
+    let speaker: ChatMessageSender
+    var text: String
+
+    var id: ChatMessageSender { speaker }
+}
+
 struct ChatMessage: Identifiable, Equatable {
     let id: UUID
     let kind: ChatMessageKind
