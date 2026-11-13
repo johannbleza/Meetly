@@ -81,17 +81,32 @@ enum GenieMesh {
 
     /// The mesh for `window` (global space, y down) at `progress`. The identity at 0; at 1
     /// every row is squeezed into the mouth line.
-    static func points(window: CGRect, target: GenieTarget, progress: CGFloat) -> [WindowWarp.Point] {
+    ///
+    /// `contentHeight` is how much of the window, from its top, is drawn: a transparent canvas
+    /// (the floating overlay) funnels only its visible part, and the empty rest is folded flat
+    /// under it, so the timing follows what you can see. Rows that start above the mouth (a
+    /// window carried up into the notch) start on the mouth line, under the notch.
+    static func points(
+        window: CGRect,
+        target: GenieTarget,
+        progress: CGFloat,
+        contentHeight: CGFloat? = nil
+    ) -> [WindowWarp.Point] {
         let (bend, slide) = phases(progress)
-        let span = max(window.maxY - target.y, 1)
+        let content = min(max(contentHeight ?? window.height, 1), window.height)
+        let hasSpare = content < window.height - 0.5
+        let contentRows = hasSpare ? rows - 1 : rows
+        let span = max(window.minY + content - target.y, 1)
         let mouthLeft = target.centerX - target.width / 2
         let mouthRight = target.centerX + target.width / 2
         var mesh: [WindowWarp.Point] = []
         mesh.reserveCapacity(columns * rows)
         for row in 0..<rows {
-            let localY = window.height * CGFloat(row) / CGFloat(rows - 1)
-            // Funnel coordinate: 0 at the mouth, 1 at the window's bottom edge.
-            let rest = (window.minY + localY - target.y) / span
+            let isSpare = hasSpare && row == rows - 1
+            let drawnY = content * CGFloat(min(row, contentRows - 1)) / CGFloat(contentRows - 1)
+            let localY = isSpare ? window.height : drawnY
+            // Funnel coordinate: 0 at the mouth, 1 at the drawn bottom edge.
+            let rest = max(window.minY + drawnY - target.y, 0) / span
             let u = max(0, rest - slide)
             let y = target.y + u * span
             // The funnel's S-curve: mouth width up top, the window's width at the bottom.
@@ -137,7 +152,9 @@ final class WindowGenieController: NSObject {
     private(set) var direction: Direction?
 
     private static let substep = 1.0 / 240
-    private static let spring = LiquidSpring.Params(response: 0.5, damping: 1)
+    private let spring: LiquidSpring.Params
+    /// How much of the window, from its top, is drawn (nil: all of it). Read every frame.
+    var contentHeight: (() -> CGFloat?)?
     /// Above the menu bar, so the funnel crosses it cleanly, and under the notch (+3), which
     /// hides the mouth.
     private static let level = NSWindow.Level(rawValue: NSWindow.Level.mainMenu.rawValue + 2)
@@ -171,6 +188,12 @@ final class WindowGenieController: NSObject {
     /// The window is invisible but not ordered out yet, after a collapse.
     var isHidingWindow: Bool {
         pendingHide != nil
+    }
+
+    /// `response` 0.5 is about the Dock's minimize; a small panel reads right a little quicker.
+    init(response: Double = 0.5) {
+        spring = LiquidSpring.Params(response: response, damping: 1)
+        super.init()
     }
 
     #if DEBUG
@@ -235,7 +258,8 @@ final class WindowGenieController: NSObject {
 
     private func begin(_ window: NSWindow, target: GenieTarget, progress start: CGFloat) -> Bool {
         let frame = WindowWarp.globalRect(window.frame)
-        guard frame.width > 1, frame.height > 1, frame.minY > target.y + 1 else { return false }
+        let content = min(contentHeight?() ?? frame.height, frame.height)
+        guard frame.width > 1, frame.height > 1, frame.minY + content > target.y + 24 else { return false }
         saved = (window.level, window.ignoresMouseEvents, window.animationBehavior)
         window.ignoresMouseEvents = true
         window.level = Self.level
@@ -244,7 +268,7 @@ final class WindowGenieController: NSObject {
         if start > 0 {
             window.orderFront(nil)
         }
-        let mesh = GenieMesh.points(window: frame, target: target, progress: start)
+        let mesh = GenieMesh.points(window: frame, target: target, progress: start, contentHeight: content)
         guard WindowWarp.set(window, columns: GenieMesh.columns, rows: GenieMesh.rows, mesh: mesh) else {
             if start > 0 {
                 window.orderOut(nil)
@@ -304,15 +328,17 @@ final class WindowGenieController: NSObject {
         var remaining = elapsed * speed
         while remaining > 1e-9 {
             let dt = min(remaining, Self.substep)
-            lead.step(dt, Self.spring)
+            lead.step(dt, spring)
             progress.target = lead.value
-            progress.step(dt, Self.spring)
+            progress.step(dt, spring)
             remaining -= dt
         }
 
         let isDone = direction == .collapse ? progress.value >= 1 : progress.value <= Self.expandEnd
         let g = isDone ? (direction == .collapse ? 1 : 0) : CGFloat(min(max(progress.value, 0), 1))
-        let mesh = GenieMesh.points(window: frame, target: target, progress: g)
+        // Read again every frame: the floating overlay pours out while it's being dragged.
+        frame = WindowWarp.globalRect(window.frame)
+        let mesh = GenieMesh.points(window: frame, target: target, progress: g, contentHeight: contentHeight?())
         let isWarped = WindowWarp.set(window, columns: GenieMesh.columns, rows: GenieMesh.rows, mesh: mesh)
         onProgress?(direction, g, GenieMesh.phases(g).slide)
         #if DEBUG

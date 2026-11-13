@@ -33,10 +33,6 @@ final class NotchModel {
 
     /// Rubber-banded pull, in points (down and right are positive).
     var pull: CGSize = .zero
-    /// The drop, threads and bridge drawn by `NotchLiquidLayer`, updated every display frame
-    /// by `NotchLiquidDriver`. Only that layer reads it, so the rest of the notch doesn't
-    /// re-render at frame rate.
-    var liquid = NotchLiquid()
     /// 0...1 how strongly the notch reaches toward a nearby floating overlay.
     var reach: CGFloat = 0
     /// Briefly widens the notch when it swallows the overlay, then springs back to 0.

@@ -82,6 +82,7 @@ struct OverlayView: View {
             .fixedSize(horizontal: false, vertical: true)
             .overlayGlassPanel(cornerRadius: Self.idleCornerRadius)
             .overlayMotionChrome(motion, cornerRadius: Self.idleCornerRadius)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { motion?.panelHeight = $0 }
             .shadow(color: .black.opacity(0.12), radius: 16, y: 6)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
@@ -157,6 +158,7 @@ struct OverlayView: View {
         .fixedSize(horizontal: false, vertical: true)
         .overlayGlassPanel()
         .overlayMotionChrome(motion)
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { motion?.panelHeight = $0 }
         .shadow(color: .black.opacity(0.12), radius: 16, y: 6)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .onAppear {

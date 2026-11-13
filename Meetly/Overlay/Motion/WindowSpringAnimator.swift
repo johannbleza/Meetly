@@ -17,8 +17,6 @@ final class WindowSpringAnimator: NSObject {
     private var lastTimestamp: CFTimeInterval?
     private var onStep: ((CGPoint) -> Void)?
     private var completion: (() -> Void)?
-    /// Set while falling: the window accelerates under gravity instead of following a spring.
-    private var fall: (start: CGPoint, gravity: CGFloat, onLand: (CGFloat) -> Void)?
 
     init(window: NSWindow) {
         self.window = window
@@ -51,23 +49,9 @@ final class WindowSpringAnimator: NSObject {
             velocity = AnimatablePair(initialVelocity.dx, initialVelocity.dy)
         }
         target = AnimatablePair(origin.x, origin.y)
-        fall = nil
         self.spring = spring
         self.onStep = onStep
         self.completion = completion
-        startDisplayLinkIfNeeded(for: window)
-    }
-
-    /// Drops the window straight down to `origin` under gravity, drifting sideways to meet it,
-    /// like a drop of liquid falling. `onLand` gets the speed it hit at (points per second).
-    /// Use only for targets below the window.
-    func fall(to origin: CGPoint, gravity: CGFloat = 5200, onLand: @escaping (CGFloat) -> Void) {
-        guard let window else { return }
-        stop()
-        position = AnimatablePair(window.frame.origin.x, window.frame.origin.y)
-        velocity = AnimatablePair(0, -40)
-        target = AnimatablePair(origin.x, origin.y)
-        fall = (window.frame.origin, gravity, onLand)
         startDisplayLinkIfNeeded(for: window)
     }
 
@@ -78,7 +62,6 @@ final class WindowSpringAnimator: NSObject {
         lastTimestamp = nil
         onStep = nil
         completion = nil
-        fall = nil
     }
 
     private func startDisplayLinkIfNeeded(for window: NSWindow) {
@@ -92,11 +75,6 @@ final class WindowSpringAnimator: NSObject {
         let now = link.targetTimestamp
         let deltaTime = min(max(now - (lastTimestamp ?? link.timestamp), 1.0 / 240), 1.0 / 30)
         lastTimestamp = now
-
-        if let fall {
-            stepFall(fall, deltaTime: deltaTime)
-            return
-        }
 
         spring.update(value: &position, velocity: &velocity, target: target, deltaTime: deltaTime)
 
@@ -123,26 +101,6 @@ final class WindowSpringAnimator: NSObject {
         }
     }
 
-    private func stepFall(_ fall: (start: CGPoint, gravity: CGFloat, onLand: (CGFloat) -> Void), deltaTime: Double) {
-        velocity.second -= fall.gravity * deltaTime
-        position.second += velocity.second * deltaTime
-        let drop = fall.start.y - target.second
-        let progress = drop > 0 ? min(max((fall.start.y - position.second) / drop, 0), 1) : 1
-        // Ease the sideways drift out, so the drop arcs into place instead of sliding.
-        let drift = 1 - (1 - progress) * (1 - progress)
-        position.first = fall.start.x + (target.first - fall.start.x) * drift
-        let hasLanded = position.second <= target.second
-        if hasLanded {
-            position = target
-        }
-        window?.setFrameOrigin(snapped(CGPoint(x: position.first, y: position.second)))
-        if hasLanded {
-            let speed = abs(velocity.second)
-            let onLand = fall.onLand
-            stop()
-            onLand(speed)
-        }
-    }
 
     private func snapped(_ point: CGPoint) -> CGPoint {
         let scale = window?.backingScaleFactor ?? 2

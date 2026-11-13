@@ -119,10 +119,6 @@ struct NotchOverlayView: View {
         // A virtual notch has no hardware to hide behind, so it fades when it retracts.
         .opacity(metrics.hasHardwareNotch || content != .retracted ? 1 : 0)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        // The drop and bridges melt into the notch from behind it.
-        .background {
-            NotchLiquidLayer(model: model)
-        }
         .animation(animation(to: content, from: previousContent), value: content)
         .onChange(of: content, initial: true) { oldContent, newContent in
             if newContent > oldContent, newContent > .receptive, model.pull == .zero {

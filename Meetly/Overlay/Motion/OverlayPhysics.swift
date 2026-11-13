@@ -32,14 +32,8 @@ enum OverlayPhysics {
         static let expand = Animation.spring(response: 0.42, dampingFraction: 0.74)
         /// Shrinking back: settles without much bounce so it doesn't look like it's growing again.
         static let collapse = Animation.spring(response: 0.36, dampingFraction: 0.88)
-        /// The notch swallowing a drop after a tear-off or dock: loose and wobbly.
+        /// The notch gulping open as it swallows a window: loose and wobbly.
         static let gulp = Animation.spring(response: 0.5, dampingFraction: 0.55)
-        /// A drop of notch ink landing: it splats wider fast and bouncy, and grows taller a
-        /// beat slower, so it spreads like liquid instead of scaling up like a picture.
-        static let splatWidth = Animation.spring(response: 0.4, dampingFraction: 0.6)
-        static let splatHeight = Animation.spring(response: 0.52, dampingFraction: 0.74)
-        /// The floating overlay drawing back into a drop before the notch swallows it.
-        static let bead = Animation.spring(response: 0.2, dampingFraction: 0.9)
         /// Following the pointer during a drag: tight enough to feel attached, soft enough to
         /// smooth out uneven event timing.
         static let track = Animation.interactiveSpring(response: 0.15, dampingFraction: 0.86)
@@ -48,10 +42,6 @@ enum OverlayPhysics {
         static let content = Animation.spring(response: 0.38, dampingFraction: 0.86)
 
         static let windowFling = Spring(response: 0.55, dampingRatio: 0.78)
-        static let windowDock = Spring(response: 0.34, dampingRatio: 0.88)
-        /// The little bounce a falling drop makes as it lands.
-        static let windowLand = Spring(response: 0.3, dampingRatio: 0.5)
-        static let windowPopOut = Spring(response: 0.5, dampingRatio: 0.7)
 
         /// Springs a released pull back to rest, starting at the pointer's release velocity.
         /// `displacement` and `velocity` share a sign convention; velocity is in points per second.

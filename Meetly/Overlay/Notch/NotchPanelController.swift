@@ -14,12 +14,11 @@ private final class NotchPanel: NSPanel {
     }
 }
 
-/// Callbacks for a drop that has been pulled out of the notch. The overlay controller turns it
-/// into the floating overlay window and keeps moving it for the rest of the drag.
+/// Callbacks for the overlay being pulled off the notch. The overlay controller pours the
+/// floating overlay out of the notch under the pointer and keeps moving it for the rest of the drag.
 @MainActor
 protocol NotchPanelControllerDelegate: AnyObject {
-    /// `drop` is the bead that tore off, in screen coordinates.
-    func notchDidTearOff(at mouse: CGPoint, drop: CGRect)
+    func notchDidTearOff(at mouse: CGPoint)
     func notchDetachedDragMoved(to mouse: CGPoint)
     func notchDetachedDragEnded(velocity: CGVector)
 }
@@ -34,7 +33,6 @@ protocol NotchPanelControllerDelegate: AnyObject {
 final class NotchPanelController {
     let model: NotchModel
     weak var delegate: NotchPanelControllerDelegate?
-    private let liquid: NotchLiquidDriver
 
     private var panel: NotchPanel?
     private weak var sessionManager: SessionManager?
@@ -50,7 +48,7 @@ final class NotchPanelController {
     private var presentTask: Task<Void, Never>?
     private var screenObserver: NSObjectProtocol?
 
-    /// Pulling this far (pointer distance) tears the drop off.
+    /// Pulling this far (pointer distance) tears the overlay off.
     private let tearDistance: CGFloat = 120
     /// How far the hovered notch can be dragged open before more drag starts pulling it off.
     static let maxHistoryHeight: CGFloat = 320
@@ -72,7 +70,6 @@ final class NotchPanelController {
             hasHardwareNotch: false
         )
         model = NotchModel(metrics: metrics)
-        liquid = NotchLiquidDriver(model: model)
         screenObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
             object: nil,
@@ -195,8 +192,8 @@ final class NotchPanelController {
         }
     }
 
-    /// Orders the notch in, ready to reach for a drop that's about to fly up to it, so its
-    /// first layout and draw don't land mid-flight and stall the drop.
+    /// Orders the notch in, ready to reach for a window about to be sucked into it, so its
+    /// first layout and draw don't land mid-genie and stall it.
     func prepareToReceive() {
         buildPanelIfNeeded()
         guard let panel, !panel.isVisible else { return }
@@ -217,7 +214,7 @@ final class NotchPanelController {
     /// Where the main window's genie funnels into (CoreGraphics global space): a mouth a little
     /// narrower than the notch, just inside its bottom edge, so the notch hides it.
     func genieTarget() -> GenieTarget {
-        let body = liquidRestingBody()
+        let body = restingBody()
         let canvas = panel?.frame ?? model.metrics.canvasFrame
         let primaryHeight = NSScreen.screens.first?.frame.height ?? canvas.maxY
         let notchBottom = canvas.maxY - body.maxY
@@ -228,8 +225,8 @@ final class NotchPanelController {
         )
     }
 
-    /// The main window pours back out of the notch: shrink to a notch reaching for it, which
-    /// lets go (`setReach`) as the window comes out.
+    /// A window (the main window, or the floating overlay) pours back out of the notch: shrink
+    /// to a notch reaching for it, which lets go (`setReach`) as the window comes out.
     func beginPouringOut() {
         buildPanelIfNeeded()
         guard let panel else { return }
@@ -254,7 +251,7 @@ final class NotchPanelController {
         }
     }
 
-    /// The floating overlay's drop meets the notch: the notch swallows it with a wobble.
+    /// A window has been sucked in: the notch gulps and opens with a wobble.
     func absorb() {
         buildPanelIfNeeded()
         guard let panel else { return }
@@ -283,41 +280,8 @@ final class NotchPanelController {
         }
     }
 
-    /// The floating overlay, drawn back into a drop at `center` (screen coordinates), hands
-    /// itself over: the drop flies on with its `velocity` (screen, y up) and melts into the notch.
-    func absorbDrop(center: CGPoint, radius: CGFloat, velocity: CGVector) {
-        guard let panel, panel.isVisible else { return }
-        let canvas = panel.frame
-        liquid.setBridge(panel: nil, width: 0, body: liquidRestingBody(), bodyRadius: 10)
-        liquid.absorb(
-            center: CGPoint(x: center.x - canvas.minX, y: canvas.maxY - center.y),
-            radius: radius,
-            velocity: CGVector(dx: velocity.dx, dy: -velocity.dy),
-            body: liquidRestingBody(),
-            bodyRadius: 10
-        )
-    }
-
-    /// While the floating overlay is carried near the notch, a liquid bridge reaches down to
-    /// its top edge, thickening as it gets closer. `panelFrame` is in screen coordinates.
-    func setBridge(to panelFrame: CGRect?, reach: CGFloat) {
-        guard let panel, panel.isVisible, let panelFrame, liquid.mode == .idle else {
-            liquid.setBridge(panel: nil, width: 0, body: liquidRestingBody(), bodyRadius: 10)
-            return
-        }
-        let canvas = panel.frame
-        let local = CGRect(
-            x: panelFrame.minX - canvas.minX,
-            y: canvas.maxY - panelFrame.maxY,
-            width: panelFrame.width,
-            height: panelFrame.height
-        )
-        let width = 46 * OverlayPhysics.smoothstep(0.15, 1, reach)
-        liquid.setBridge(panel: local, width: width, body: liquidRestingBody(), bodyRadius: 10)
-    }
-
-    /// The hardware notch (or where the virtual one sits), which drops melt back into.
-    private func liquidRestingBody() -> CGRect {
+    /// The hardware notch (or where the virtual one sits), in window coordinates.
+    private func restingBody() -> CGRect {
         let notch = model.metrics.notchSize
         return CGRect(
             x: NotchMetrics.canvasSize.width / 2 - notch.width / 2 + 6,
@@ -328,32 +292,6 @@ final class NotchPanelController {
     }
 
     // MARK: - Pulling the overlay out
-
-    /// Plays a pull without a drag, for the pop-out button: a drop swells out of the notch,
-    /// gathers weight, and its thread gives way. Calls back with the drop's screen frame.
-    func playPopOut(completion: @escaping (CGRect) -> Void) {
-        guard isVisible, model.isPresented, !isTrackingDrag else {
-            let point = model.metrics.dockPoint
-            let size = LiquidDrop.radius * 2
-            completion(CGRect(x: point.x - size / 2, y: point.y - size, width: size, height: size))
-            return
-        }
-        Task { @MainActor [weak self] in
-            let duration = 0.42
-            let start = ProcessInfo.processInfo.systemUptime
-            while let self {
-                let t = min((ProcessInfo.processInfo.systemUptime - start) / duration, 1)
-                // Accelerating, like a drop getting heavier until it falls.
-                let eased = CGFloat(t * t * (1.6 - 0.6 * t))
-                guard t < 1 else { break }
-                self.updatePull(CGSize(width: 0, height: eased * self.tearDistance * 0.999))
-                try? await Task.sleep(for: .milliseconds(8))
-            }
-            guard let self else { return }
-            OverlayPhysics.haptic(.levelChange)
-            completion(self.detachDrop())
-        }
-    }
 
     /// The overlay left the notch without a drag (or is being shown floating): just retract.
     func retractForFloating() {
@@ -447,7 +385,7 @@ final class NotchPanelController {
         }
     }
 
-    /// Moves the notch and its drop for a pull of `translation` (down and right positive).
+    /// Stretches the notch for a pull of `translation` (down and right positive).
     /// Returns true once it's far enough to tear.
     @discardableResult
     private func updatePull(_ translation: CGSize) -> Bool {
@@ -456,7 +394,7 @@ final class NotchPanelController {
         }
         let down = max(translation.height, 0)
         let up = min(translation.height, 0)
-        // The notch itself only gives a little; the liquid drop carries the pull.
+        // The notch only gives a little, then tears off into the genie.
         var transaction = Transaction()
         transaction.disablesAnimations = true
         withTransaction(transaction) {
@@ -466,27 +404,7 @@ final class NotchPanelController {
                     + OverlayPhysics.rubberband(up, limit: 10)
             )
         }
-        liquid.pull(
-            progress: down / tearDistance,
-            distance: tearDistance,
-            sway: OverlayPhysics.rubberband(translation.width, limit: 90),
-            body: pulledLiquidBody(),
-            bodyRadius: 16
-        )
         return false
-    }
-
-    /// The drawn notch body (below its flares) with the current pull, in window coordinates.
-    private func pulledLiquidBody() -> CGRect {
-        let frame = model.shapeFrame.isEmpty ? liquidRestingBody() : model.shapeFrame
-        let top = frame.minY + model.metrics.notchSize.height * 0.5
-        let inset = min(frame.width / 4, 10)
-        return CGRect(
-            x: frame.minX + inset + model.pull.width,
-            y: top,
-            width: frame.width - inset * 2,
-            height: max(frame.maxY + model.pull.height - top, 8)
-        )
     }
 
     /// `velocity` is in AppKit screen coordinates (y up).
@@ -520,39 +438,22 @@ final class NotchPanelController {
         withAnimation(OverlayPhysics.Springs.snapBack(displacement: model.pull.height, velocity: downVelocity)) {
             model.pull = .zero
         }
-        liquid.release()
     }
 
     private var canTearOff: Bool {
         model.phase == .docked && model.isPresented
     }
 
+    /// The pull gives way: the notch closes into one reaching for the funnel the floating
+    /// overlay pours out of (`setReach` lets it go).
     private func tearOff(at mouse: CGPoint) {
         hasTornOff = true
         OverlayPhysics.haptic(.levelChange)
-        delegate?.notchDidTearOff(at: mouse, drop: detachDrop())
-    }
-
-    /// The thread snaps: the drop leaves (its screen frame is returned for the floating
-    /// overlay to take over) and the notch drains back in with a wobble, its last bead riding up.
-    private func detachDrop() -> CGRect {
-        let drop = liquid.detach(restingBody: liquidRestingBody())
-        let canvas = panel?.frame ?? model.metrics.canvasFrame
-        model.phase = .detached
-        withAnimation(OverlayPhysics.Springs.gulp) {
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
             model.pull = .zero
-            model.isHovering = false
-            model.isComposing = false
-            model.historyHeight = 0
-            model.isPresented = false
         }
-        scheduleOrderOut(after: 0.7)
-        return CGRect(
-            x: canvas.minX + drop.center.x - drop.radius,
-            y: canvas.maxY - drop.center.y - drop.radius,
-            width: drop.radius * 2,
-            height: drop.radius * 2
-        )
+        beginPouringOut()
+        delegate?.notchDidTearOff(at: mouse)
     }
 
     // MARK: - Panel
@@ -592,7 +493,6 @@ final class NotchPanelController {
         panel.setFrame(model.metrics.canvasFrame, display: false)
         ScreenShareExclusion.apply(to: panel)
         self.panel = panel
-        liquid.attach(to: panel)
     }
 
     /// Moves the notch to another display's notch (real or virtual). Only while it isn't showing
@@ -643,12 +543,11 @@ final class NotchPanelController {
             try? await Task.sleep(for: .seconds(delay))
             guard let self, !Task.isCancelled else { return }
             // Ordering out mid-drag would strand the drag's event loop.
-            while self.isTrackingDrag || self.liquid.mode != .idle {
+            while self.isTrackingDrag {
                 try? await Task.sleep(for: .milliseconds(50))
                 if Task.isCancelled { return }
             }
             guard !self.model.isPresented, self.model.reach == 0 else { return }
-            self.liquid.reset()
             self.panel?.orderOut(nil)
             self.stopPointerTracking()
             self.model.isHovering = false
