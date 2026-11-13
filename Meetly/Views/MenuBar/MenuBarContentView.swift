@@ -177,6 +177,12 @@ struct MenuBarContentView: View {
             .disabled(true)
 
         Button {
+            sessionManager.stopSummarizing()
+        } label: {
+            Label("Stop Summarizing", systemImage: "stop.fill")
+        }
+
+        Button {
             MainWindowController.shared.showMainWindow()
         } label: {
             Label("Show Main Window", systemImage: "macwindow")

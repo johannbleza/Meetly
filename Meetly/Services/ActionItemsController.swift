@@ -10,6 +10,7 @@ final class ActionItemsController {
     let session: MeetingSession
     private let modelContext: ModelContext
     private let aiService = AIService()
+    private var task: Task<Void, Never>?
 
     init(session: MeetingSession, modelContext: ModelContext) {
         self.session = session
@@ -30,6 +31,20 @@ final class ActionItemsController {
 
     var hasSourceContent: Bool {
         MeetingContextBuilder.hasContent(for: session)
+    }
+
+    /// Starts generating, as a task `cancel()` can stop.
+    func start() {
+        guard canGenerate, task == nil else { return }
+        task = Task {
+            await generate()
+            task = nil
+        }
+    }
+
+    /// Stops generating. Whatever was there before is left as it was.
+    func cancel() {
+        task?.cancel()
     }
 
     func generate(replacingExisting: Bool = true) async {
@@ -53,6 +68,7 @@ final class ActionItemsController {
         do {
             let context = MeetingContextBuilder.context(for: session)
             let items = try await aiService.generateActionItems(from: context)
+            guard !Task.isCancelled else { return }
 
             guard let summary = session.summary else { return }
 
@@ -74,6 +90,7 @@ final class ActionItemsController {
 
             try modelContext.save()
         } catch {
+            guard !Task.isCancelled, !(error is CancellationError) else { return }
             errorMessage = error.localizedDescription
         }
     }

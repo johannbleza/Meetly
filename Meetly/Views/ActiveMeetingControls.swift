@@ -29,12 +29,8 @@ struct ActiveMeetingControls: View {
                 }
 
             case .summarizing:
-                HStack(spacing: 6) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text("Summarizing…")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(AppTheme.textSecondary)
+                SummarizingPill {
+                    sessionManager.stopSummarizing()
                 }
             }
         }
@@ -56,6 +52,41 @@ struct ActiveMeetingControls: View {
             }
         }
         .accessibilityElement(children: .combine)
+    }
+}
+
+/// "Summarizing…" with a spinner; hovering turns it into a Stop button that ends the summary.
+private struct SummarizingPill: View {
+    let onStop: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: onStop) {
+            HStack(spacing: 6) {
+                if isHovered {
+                    Image(systemName: "stop.fill")
+                        .font(.system(size: 10, weight: .semibold))
+                } else {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+                Text(isHovered ? "Stop Summarizing" : "Summarizing…")
+                    .font(.system(size: 12, weight: isHovered ? .semibold : .medium))
+            }
+            .foregroundStyle(isHovered ? AppTheme.danger : AppTheme.textSecondary)
+            .padding(.horizontal, 12)
+            .frame(height: 28)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(isHovered ? AppTheme.danger.opacity(0.14) : Color.clear)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .help("Stop summarizing this meeting")
+        .accessibilityLabel("Stop summarizing")
     }
 }
 

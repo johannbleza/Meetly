@@ -82,6 +82,9 @@ final class SessionManager {
     /// The call this recording stops with. Stays nil for meetings without a call, such as in-person ones.
     private var autoStopSource: MeetingSource?
     private var autoStopTask: Task<Void, Never>?
+    /// The summary written as a meeting stops; `stopSummarizing()` cancels it, which also ends
+    /// the command-line tool it's waiting on.
+    private var summaryTask: Task<Void, Never>?
     private var idleStopTask: Task<Void, Never>?
     /// Last transcript or user action in the current recording.
     private var lastRecordingActivityAt = Date()
@@ -533,7 +536,10 @@ final class SessionManager {
             if saveSummary {
                 lastCompletedSessionID = currentSession.id
                 state = .summarizing
-                await generateSummary(for: currentSession)
+                let task = Task { await self.generateSummary(for: currentSession) }
+                summaryTask = task
+                await task.value
+                summaryTask = nil
             }
         }
 
@@ -1170,6 +1176,12 @@ final class SessionManager {
         return lines.joined(separator: "\n")
     }
 
+    /// Stops the summary a stopping meeting is writing. The meeting is kept as it is, with its
+    /// earlier summary if it had one; it can be summarized again from its page.
+    func stopSummarizing() {
+        summaryTask?.cancel()
+    }
+
     private func generateSummary(for session: MeetingSession) async {
         guard let modelContext else { return }
 
@@ -1179,6 +1191,7 @@ final class SessionManager {
 
         do {
             let output = try await aiService.generateSummary(from: transcript)
+            guard !Task.isCancelled else { return }
             // A continued meeting already has one; its action items go with it via cascade.
             if let existing = session.summary {
                 session.summary = nil
@@ -1200,6 +1213,8 @@ final class SessionManager {
             modelContext.insert(summary)
             try modelContext.save()
         } catch {
+            // Stopped on purpose: not an error.
+            guard !Task.isCancelled, !(error is CancellationError) else { return }
             errorMessage = error.localizedDescription
         }
     }

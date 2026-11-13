@@ -639,9 +639,10 @@ private struct EmptySummaryCard: View {
                     title: "Generate Summary",
                     isGenerating: controller.isGenerating,
                     isProminent: true,
-                    isEnabled: controller.canGenerate
+                    isEnabled: controller.canGenerate,
+                    onStop: controller.cancel
                 ) {
-                    Task { await controller.generate() }
+                    controller.start()
                 }
             }
         }
@@ -671,9 +672,10 @@ private struct SummaryFooter: View {
                     GenerateButton(
                         title: "Regenerate",
                         isGenerating: controller.isGenerating,
-                        isEnabled: controller.canGenerate
+                        isEnabled: controller.canGenerate,
+                        onStop: controller.cancel
                     ) {
-                        Task { await controller.generate() }
+                        controller.start()
                     }
                 }
             }
@@ -681,22 +683,28 @@ private struct SummaryFooter: View {
     }
 }
 
+/// Generates, and while it's generating, stops: hovering "Generating…" turns it into Stop.
 private struct GenerateButton: View {
     let title: String
     let isGenerating: Bool
     var isProminent = false
     let isEnabled: Bool
+    let onStop: () -> Void
     let action: () -> Void
+
+    @State private var isHovered = false
 
     var body: some View {
         DetailPillButton(
-            title: isGenerating ? "Generating…" : title,
-            systemImage: "sparkles",
+            title: isGenerating ? (isHovered ? "Stop Generating" : "Generating…") : title,
+            systemImage: isGenerating && isHovered ? "stop.fill" : "sparkles",
             isProminent: isProminent,
-            action: action
+            action: isGenerating ? onStop : action
         )
-        .disabled(!isEnabled || isGenerating)
+        .onHover { isHovered = $0 }
+        .disabled(!isEnabled && !isGenerating)
         .opacity(isEnabled || isGenerating ? 1 : 0.5)
+        .help(isGenerating ? "Stop generating" : "")
     }
 }
 
@@ -732,9 +740,10 @@ private struct SessionActionItemsSection: View {
                 GenerateButton(
                     title: items.isEmpty ? "Generate Action Items" : "Regenerate Action Items",
                     isGenerating: controller.isGenerating,
-                    isEnabled: controller.canGenerate
+                    isEnabled: controller.canGenerate,
+                    onStop: controller.cancel
                 ) {
-                    Task { await controller.generate() }
+                    controller.start()
                 }
             }
         }

@@ -10,6 +10,7 @@ final class MeetingSummaryController {
     let session: MeetingSession
     private let modelContext: ModelContext
     private let aiService = AIService()
+    private var task: Task<Void, Never>?
 
     init(session: MeetingSession, modelContext: ModelContext) {
         self.session = session
@@ -34,6 +35,20 @@ final class MeetingSummaryController {
         hasTranscript && isAvailable && !isGenerating
     }
 
+    /// Starts generating, as a task `cancel()` can stop.
+    func start() {
+        guard canGenerate, task == nil else { return }
+        task = Task {
+            await generate()
+            task = nil
+        }
+    }
+
+    /// Stops generating. Whatever was there before is left as it was.
+    func cancel() {
+        task?.cancel()
+    }
+
     func generate() async {
         guard canGenerate else { return }
 
@@ -55,9 +70,11 @@ final class MeetingSummaryController {
 
         do {
             let output = try await aiService.generateSummary(from: transcript)
+            guard !Task.isCancelled else { return }
             apply(output)
             try modelContext.save()
         } catch {
+            guard !Task.isCancelled, !(error is CancellationError) else { return }
             errorMessage = error.localizedDescription
         }
     }
