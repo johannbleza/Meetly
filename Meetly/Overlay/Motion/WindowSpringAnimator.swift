@@ -66,7 +66,14 @@ final class WindowSpringAnimator: NSObject {
 
     private func startDisplayLinkIfNeeded(for window: NSWindow) {
         guard displayLink == nil else { return }
-        let link = window.displayLink(target: self, selector: #selector(step(_:)))
+        // Paced by the display the window is headed for, not the window's own link: a window
+        // carried (or flung) mostly off its display stops getting its own frames, and would be
+        // stranded there.
+        let top = CGPoint(x: target.first + window.frame.width / 2, y: target.second + window.frame.height - 1)
+        let screen = NSScreen.screens.first { $0.frame.contains(top) }
+            ?? NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) }
+        let link = screen?.displayLink(target: self, selector: #selector(step(_:)))
+            ?? window.displayLink(target: self, selector: #selector(step(_:)))
         link.add(to: .main, forMode: .common)
         displayLink = link
     }

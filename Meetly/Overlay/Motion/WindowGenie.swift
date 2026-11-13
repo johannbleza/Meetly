@@ -289,10 +289,22 @@ final class WindowGenieController: NSObject {
         lead.target = direction == .collapse ? Self.collapseTarget : Self.expandTarget
         startWatchdog()
         guard displayLink == nil, let window else { return }
-        let link = window.displayLink(target: self, selector: #selector(tick(_:)))
+        // Paced by the display the mouth is on, not the window's own link: a window dragged
+        // (or flung) mostly off its display stops getting its own frames, which froze the
+        // genie until the watchdog cut it to the end.
+        let link = Self.screen(containing: target)?.displayLink(target: self, selector: #selector(tick(_:)))
+            ?? window.displayLink(target: self, selector: #selector(tick(_:)))
         link.add(to: .main, forMode: .common)
         displayLink = link
         lastTimestamp = nil
+    }
+
+    /// The display the mouth is on (CoreGraphics global space, y down).
+    private static func screen(containing target: GenieTarget) -> NSScreen? {
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        // Just inside the mouth line, so a mouth on a display's top edge counts as on it.
+        let point = CGPoint(x: target.centerX, y: primaryHeight - target.y - 1)
+        return NSScreen.screens.first { $0.frame.contains(point) }
     }
 
     /// Turns around mid-flight, keeping the momentum.
@@ -345,6 +357,11 @@ final class WindowGenieController: NSObject {
         traceFrame(start: tickStart)
         #endif
         if isDone || !isWarped {
+            #if DEBUG
+            if !isWarped, isTracing {
+                NSLog("GenieTrace warp refused at g %.3f, window %@, mouth %.0f,%.0f", g, NSStringFromRect(frame), target.centerX, target.y)
+            }
+            #endif
             // Refused partway (shouldn't happen): skip to the end rather than leave it bent.
             finish(completed: true)
         }

@@ -591,7 +591,11 @@ final class NotchPanelController {
         let mouse = NSEvent.mouseLocation
         let isInside = model.isPresented && model.phase == .docked && hitRect().contains(mouse)
 
-        let ignoresMouse = !(isInside || isTrackingDrag)
+        // A press that started on the notch keeps the mouse until it's released: a fast pull
+        // carries the pointer off the notch before the drag gesture reports its first change,
+        // and letting go of the mouse then would hand the rest of the drag to whatever is below.
+        let isHoldingPress = NSEvent.pressedMouseButtons & 1 != 0 && !panel.ignoresMouseEvents
+        let ignoresMouse = !(isInside || isTrackingDrag || isHoldingPress)
         if panel.ignoresMouseEvents != ignoresMouse {
             panel.ignoresMouseEvents = ignoresMouse
         }
