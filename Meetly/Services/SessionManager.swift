@@ -335,18 +335,6 @@ final class SessionManager {
                 warningMessage = warning
             }
 
-            // Present the share picker before hiding the main window. SCContentSharingPicker
-            // needs an active key window; orderOut + overlay orderFrontRegardless made the
-            // picker fail/cancel silently when starting from the main window.
-            if AppSettings.captureMeetingAudioByDefault {
-                await enableSystemAudioAtStart()
-            }
-
-            // After the picker, which clears warningMessage on success.
-            if let notice = transcriptionService.fallbackNotice {
-                warningMessage = [warningMessage, notice].compactMap { $0 }.joined(separator: " ")
-            }
-
             if overlayDock == .floating, OverlayPanelController.shared.isFloatingVisible {
                 // Started from a popped-out prompt: meetings always start in the notch.
                 MainWindowController.shared.hideMainWindow()
@@ -357,6 +345,23 @@ final class SessionManager {
                 OverlayPanelController.shared.showAbsorbingMainWindow()
             }
             OverlayPanelController.shared.updateForPresentation(.expanded)
+
+            // The share picker opens once the window is in the notch, with the notch panel as
+            // its key window (`prepareForContentSharingPicker`). Opening it first left the
+            // pointer wherever the picked window was, often another display, and the genie
+            // was skipped. The window must be ordered out before the picker opens, not while
+            // it's up, or the picker cancels itself.
+            if AppSettings.captureMeetingAudioByDefault {
+                await OverlayPanelController.shared.settleMainWindowIntoNotch()
+                if state == .recording {
+                    await enableSystemAudioAtStart()
+                }
+            }
+
+            // After the picker, which clears warningMessage on success.
+            if let notice = transcriptionService.fallbackNotice {
+                warningMessage = [warningMessage, notice].compactMap { $0 }.joined(separator: " ")
+            }
         } catch {
             errorMessage = error.localizedDescription
             await stopMeeting(saveSummary: false)

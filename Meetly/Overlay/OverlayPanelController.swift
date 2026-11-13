@@ -179,8 +179,11 @@ final class OverlayPanelController: NotchPanelControllerDelegate {
             show()
             return
         }
-        if presentation == .hidden {
-            moveToActiveScreen()
+        // The notch opens on the window's display, not the pointer's: after the share picker
+        // the pointer is often on the other display (where the picked window was), and the
+        // genie can't funnel the window across displays.
+        if let screen = Self.screen(containing: window.frame) {
+            moveToActiveScreen(screen)
         }
         guard Self.screen(containing: window.frame)?.frame == notch.metrics.screenFrame else {
             genieLog("start: no genie (window on another display than the notch)")
@@ -218,6 +221,12 @@ final class OverlayPanelController: NotchPanelControllerDelegate {
         }
         // A start that just finished may not have ordered the window out yet.
         windowGenie.finishHiding()
+        // It pours out on the window's own display: the notch there takes over from the one
+        // the meeting was showing on (⌘\ may have brought it to another display).
+        if !reduceMotion, let window = windows.window, !windows.isMainWindowVisible,
+           let screen = Self.screen(containing: window.frame) {
+            notch.relocate(to: NotchMetrics.metrics(for: screen))
+        }
         guard !reduceMotion, let window = windows.window, windows.canMorph,
               !windows.isMainWindowVisible,
               Self.screen(containing: window.frame)?.frame == notch.metrics.screenFrame else {
@@ -274,8 +283,28 @@ final class OverlayPanelController: NotchPanelControllerDelegate {
         setGenieReach(OverlayPhysics.smoothstep(0.15, 0.6, progress))
     }
 
+    private var genieWaiters: [CheckedContinuation<Void, Never>] = []
+
+    /// Waits for the main window to be all the way into the notch and ordered out, so the
+    /// share picker can open over the notch: it cancels itself when its key window is ordered
+    /// out under it. Returns at once when no genie is running. The genie's watchdog bounds it.
+    func settleMainWindowIntoNotch() async {
+        if windowGenie.direction == .collapse {
+            await withCheckedContinuation { genieWaiters.append($0) }
+            // Let the notch finish its gulp before ordering the window out stalls a few frames.
+            try? await Task.sleep(for: .milliseconds(350))
+        }
+        guard windowGenie.direction == nil else { return }
+        windowGenie.finishHiding()
+    }
+
     private func genieFinished(_ direction: WindowGenieController.Direction, completed: Bool) {
         genieReach = nil
+        defer {
+            let waiters = genieWaiters
+            genieWaiters = []
+            waiters.forEach { $0.resume() }
+        }
         switch direction {
         case .collapse:
             if presentation == .hidden {
@@ -661,8 +690,9 @@ final class OverlayPanelController: NotchPanelControllerDelegate {
 
     /// Puts the notch, and the floating panel if that's where the overlay lives, on the display
     /// the user is working on. The floating panel keeps its spot if it's already there.
-    private func moveToActiveScreen() {
-        guard let screen = NotchMetrics.activeScreen() else { return }
+    /// Moves the overlay to `screen`, or by default to the display under the pointer.
+    private func moveToActiveScreen(_ screen: NSScreen? = nil) {
+        guard let screen = screen ?? NotchMetrics.activeScreen() else { return }
         // In floating mode too, so docking flies to this display's notch.
         notch.relocate(to: NotchMetrics.metrics(for: screen))
         guard dock == .floating else { return }
