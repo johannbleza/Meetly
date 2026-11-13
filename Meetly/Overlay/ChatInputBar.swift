@@ -5,6 +5,9 @@ struct OverlayInputBar: View {
     @Binding var text: String
     @Binding var pendingImages: [ChatImageAttachment]
     let isDisabled: Bool
+    /// Shows a close button and handles Escape when set.
+    var onCancel: (() -> Void)? = nil
+    var focusOnAppear = false
     let onSend: (String, [ChatImageAttachment]) -> Void
 
     var body: some View {
@@ -26,7 +29,9 @@ struct OverlayInputBar: View {
                     onSubmit: sendIfPossible,
                     onFocus: {
                         OverlayPanelController.shared.activateForInput()
-                    }
+                    },
+                    onCancel: onCancel,
+                    focusOnAppear: focusOnAppear
                 )
                 .padding(.horizontal, 10)
                 .padding(.vertical, 7)
@@ -46,6 +51,16 @@ struct OverlayInputBar: View {
             .controlSize(.small)
             .disabled(isDisabled || !canSend)
             .padding(.bottom, 4)
+
+            if let onCancel {
+                Button(action: onCancel) {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.borderless)
+                .controlSize(.small)
+                .help("Cancel")
+                .padding(.bottom, 7)
+            }
         }
         .padding(.horizontal, 12)
         .padding(.bottom, 12)

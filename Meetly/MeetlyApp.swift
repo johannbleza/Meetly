@@ -11,6 +11,7 @@ import SwiftUI
 struct MeetlyApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var sessionManager: SessionManager
+    @AppStorage(AppSettings.appThemeKey) private var appTheme: AppTheme.Mode = .system
     private let sharedModelContainer: ModelContainer
 
     init() {
@@ -58,10 +59,24 @@ struct MeetlyApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView(sessionManager: sessionManager)
-                .preferredColorScheme(.dark)
+                .preferredColorScheme(appTheme.colorScheme)
         }
         .modelContainer(sharedModelContainer)
         .defaultSize(width: 1100, height: 720)
+        .commands {
+            CommandGroup(replacing: .appSettings) {
+                SettingsMenuCommand()
+            }
+        }
+
+        Window("Settings", id: SettingsWindow.id) {
+            SettingsView()
+                .frame(minWidth: 820, minHeight: 560)
+                .preferredColorScheme(appTheme.colorScheme)
+                .background(SettingsWindowReader())
+        }
+        .defaultSize(width: 960, height: 700)
+        .windowResizability(.contentMinSize)
 
         MenuBarExtra {
             MenuBarContentView(sessionManager: sessionManager)

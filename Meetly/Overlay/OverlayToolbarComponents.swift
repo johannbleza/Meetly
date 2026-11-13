@@ -9,6 +9,14 @@ enum MeetingTimeFormatting {
     }
 }
 
+/// One-click questions offered in both the floating overlay and the notch.
+enum OverlayQuickPrompt {
+    static let whatToSay = "What should I say next based on this conversation?"
+    static let recap = "Give me a brief recap of what's been discussed so far."
+    static let screen =
+        "This is a screenshot of my screen right now. Explain what it shows and point out anything useful for this meeting."
+}
+
 struct OverlayToolbarDivider: View {
     var body: some View {
         Rectangle()
@@ -43,34 +51,13 @@ struct OverlayMeetingToolbar: View {
     var isFolded: Bool
 
     var body: some View {
+        // Same layout as the notch's top bar: status on the left, controls on the right.
         HStack(spacing: 10) {
-            HStack(spacing: 2) {
-                OverlayToolbarIconButton(systemImage: "eye.slash", help: "Hide overlay") {
-                    sessionManager.hideOverlay()
-                }
-                OverlayToolbarIconButton(
-                    systemImage: isFolded ? "chevron.down" : "chevron.up",
-                    help: isFolded ? "Expand overlay" : "Fold overlay"
-                ) {
-                    if isFolded {
-                        sessionManager.expandOverlay()
-                    } else {
-                        sessionManager.foldOverlay()
-                    }
-                }
-            }
-
-            OverlayToolbarDivider()
-
             OverlayStatusIndicator(sessionManager: sessionManager, showsLabel: true)
 
             Spacer(minLength: 0)
 
-            OverlayToolbarDivider()
-
             HStack(spacing: 2) {
-                OverlayMuteMicButton(sessionManager: sessionManager)
-                OverlayPauseResumeButton(sessionManager: sessionManager)
                 OverlayToolbarIconButton(systemImage: "stop.fill", help: "Stop meeting", tint: .red) {
                     Task { await sessionManager.stopMeeting() }
                 }
@@ -128,39 +115,6 @@ struct OverlayStatusIndicator: View {
             "Paused"
         default:
             ""
-        }
-    }
-}
-
-struct OverlayMuteMicButton: View {
-    var sessionManager: SessionManager
-
-    var body: some View {
-        OverlayToolbarIconButton(
-            systemImage: sessionManager.isMicrophoneMuted ? "mic.slash.fill" : "mic.fill",
-            help: sessionManager.isMicrophoneMuted ? "Unmute microphone" : "Mute microphone",
-            tint: sessionManager.isMicrophoneMuted ? .orange : .primary
-        ) {
-            sessionManager.toggleMicrophoneMute()
-        }
-    }
-}
-
-struct OverlayPauseResumeButton: View {
-    var sessionManager: SessionManager
-
-    var body: some View {
-        switch sessionManager.state {
-        case .recording:
-            OverlayToolbarIconButton(systemImage: "pause.fill", help: "Pause transcription") {
-                Task { await sessionManager.pauseMeeting() }
-            }
-        case .paused:
-            OverlayToolbarIconButton(systemImage: "play.fill", help: "Resume transcription") {
-                Task { await sessionManager.resumeMeeting() }
-            }
-        default:
-            EmptyView()
         }
     }
 }

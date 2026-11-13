@@ -1,189 +1,109 @@
 import SwiftUI
 
+/// The meeting control in the main window's title bar: Start Meeting when idle, or the
+/// recording status with Stop (and Resume while paused).
 struct ActiveMeetingControls: View {
     @Bindable var sessionManager: SessionManager
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        HStack(spacing: 8) {
             switch sessionManager.state {
             case .idle:
-                Button {
+                TitleBarPill(title: "Start Meeting", systemImage: "mic.fill", style: .accent) {
                     Task { await sessionManager.startMeeting() }
-                } label: {
-                    Label("Start Meeting", systemImage: "mic.fill")
-                        .font(.appBody.weight(.medium))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 8)
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(.white)
-                .background(AppTheme.accent)
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
 
             case .recording:
-                meetingStatusIndicator(label: "Recording", color: AppTheme.danger)
-
-                Button {
-                    Task { await sessionManager.pauseMeeting() }
-                } label: {
-                    Label("Pause", systemImage: "pause.fill")
-                        .font(.appBody.weight(.medium))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 8)
+                status(label: "Recording", color: AppTheme.danger)
+                TitleBarPill(title: "Stop", systemImage: "stop.fill", style: .danger) {
+                    Task { await sessionManager.stopMeeting() }
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(AppTheme.textPrimary)
-                .background(AppTheme.bgInput)
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .stroke(AppTheme.border, lineWidth: 1)
-                }
-
-                stopMeetingButton
-                meetingActions
 
             case .paused:
-                meetingStatusIndicator(label: "Paused", color: .yellow)
-
-                Button {
+                status(label: "Paused", color: AppTheme.warning)
+                TitleBarPill(title: "Resume", systemImage: "play.fill", style: .accent) {
                     Task { await sessionManager.resumeMeeting() }
-                } label: {
-                    Label("Resume", systemImage: "play.fill")
-                        .font(.appBody.weight(.medium))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 8)
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(.white)
-                .background(AppTheme.accent)
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-
-                stopMeetingButton
-                meetingActions
+                TitleBarPill(title: "Stop", systemImage: "stop.fill", style: .danger) {
+                    Task { await sessionManager.stopMeeting() }
+                }
 
             case .summarizing:
-                HStack(spacing: 8) {
+                HStack(spacing: 6) {
                     ProgressView()
                         .controlSize(.small)
-                    Text("Generating summary...")
-                        .font(.appCaption)
+                    Text("Summarizing…")
+                        .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(AppTheme.textSecondary)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
+        .fixedSize()
     }
 
-    private func meetingStatusIndicator(label: String, color: Color) -> some View {
-        HStack(spacing: 8) {
+    private func status(label: String, color: Color) -> some View {
+        HStack(spacing: 6) {
             Circle()
                 .fill(color)
-                .frame(width: 8, height: 8)
+                .frame(width: 7, height: 7)
             Text(label)
-                .font(.appCaption.weight(.semibold))
+                .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(AppTheme.textPrimary)
-            Spacer()
             TimelineView(.periodic(from: .now, by: 1)) { _ in
                 Text(MeetingTimeFormatting.elapsed(sessionManager.sessionElapsedTime))
-                    .font(.appCaption.monospacedDigit())
+                    .font(.system(size: 12).monospacedDigit())
                     .foregroundStyle(AppTheme.textSecondary)
             }
         }
+        .accessibilityElement(children: .combine)
     }
+}
 
-    private var stopMeetingButton: some View {
-        Button {
-            Task { await sessionManager.stopMeeting() }
-        } label: {
-            Label("Stop Meeting", systemImage: "stop.fill")
-                .font(.appBody.weight(.medium))
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 8)
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(.white)
-        .background(AppTheme.danger)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-    }
+/// A rounded, tinted button sized for the title bar.
+struct TitleBarPill: View {
+    enum Style { case accent, danger }
 
-    @ViewBuilder
-    private var meetingActions: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if !sessionManager.isSystemAudioEnabled, sessionManager.state == .recording {
-                compactButton(
-                    title: "Capture Meeting Audio",
-                    icon: "speaker.wave.2.fill",
-                    action: {
-                        Task { await sessionManager.enableSystemAudio() }
-                    },
-                    help: "Optional. macOS requires Screen & System Audio Recording to hear other participants."
-                )
-            }
+    let title: String
+    let systemImage: String
+    let style: Style
+    let action: () -> Void
 
-            compactButton(
-                title: sessionManager.isOverlayVisible ? "Hide Overlay" : "Show Overlay",
-                icon: sessionManager.isOverlayVisible ? "eye.slash" : "eye",
-                action: {
-                    sessionManager.toggleOverlay()
-                },
-                help: "Toggle overlay (⌘\\)."
-            )
+    @State private var isHovered = false
 
-            if sessionManager.isOverlayVisible {
-                switch sessionManager.overlayPresentation {
-                case .folded:
-                    compactButton(
-                        title: "Expand Overlay",
-                        icon: "chevron.down",
-                        action: {
-                            sessionManager.expandOverlay()
-                        }
-                    )
-                case .expanded:
-                    compactButton(
-                        title: "Fold Overlay",
-                        icon: "chevron.up",
-                        action: {
-                            sessionManager.foldOverlay()
-                        }
-                    )
-                case .hidden:
-                    EmptyView()
-                }
-            }
-        }
-    }
-
-    private func compactButton(
-        title: String,
-        icon: String,
-        action: @escaping () -> Void,
-        help: String? = nil
-    ) -> some View {
+    var body: some View {
         Button(action: action) {
-            Label(title, systemImage: icon)
-                .font(.appCaption)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 7)
+            Label(title, systemImage: systemImage)
+                .labelStyle(.titleAndIcon)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(foreground)
+                .padding(.horizontal, 12)
+                .frame(height: 28)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(background.opacity(isHovered ? 0.8 : 1))
+                )
+                .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
         .buttonStyle(.plain)
-        .foregroundStyle(AppTheme.textPrimary)
-        .background(AppTheme.bgInput)
-        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .stroke(AppTheme.border, lineWidth: 1)
+        .onHover { isHovered = $0 }
+    }
+
+    private var foreground: Color {
+        switch style {
+        case .accent: AppTheme.accent
+        case .danger: AppTheme.danger
         }
-        .help(help ?? title)
+    }
+
+    private var background: Color {
+        switch style {
+        case .accent: AppTheme.accentSoft
+        case .danger: AppTheme.danger.opacity(0.14)
+        }
     }
 }
 
 #Preview {
     ActiveMeetingControls(sessionManager: SessionManager())
         .padding()
-        .frame(width: 260)
-        .appPanelBackground(AppTheme.bgSidebar)
-        .preferredColorScheme(.dark)
 }

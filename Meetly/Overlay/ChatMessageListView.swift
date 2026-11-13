@@ -21,6 +21,10 @@ struct ChatMessageListView: View {
                 .onChange(of: messages.count) { _, _ in
                     scrollToBottom(proxy: proxy)
                 }
+                // A saved answer replaces the pending question, so the count alone can miss it.
+                .onChange(of: messages.last?.id) { _, _ in
+                    scrollToBottom(proxy: proxy)
+                }
                 .onChange(of: isAwaitingAnswer) { _, _ in
                     scrollToBottom(proxy: proxy)
                 }
@@ -48,19 +52,28 @@ struct ChatMessageListView: View {
                 .padding(.horizontal, 4)
                 .id("typing-indicator")
             }
+
+            Color.clear
+                .frame(height: 1)
+                .id(Self.bottomAnchorID)
         }
         .padding(.horizontal, style == .home ? 0 : 12)
         .padding(.vertical, style == .home ? 0 : 8)
     }
 
+    private static let bottomAnchorID = "chat-bottom"
+
     private func scrollToBottom(proxy: ScrollViewProxy) {
-        if isAwaitingAnswer {
+        // Scrolling in the same update lands short of a long new answer, because its bubble
+        // hasn't been measured yet. Wait for layout, then settle once more after it has.
+        Task { @MainActor in
+            await Task.yield()
             withAnimation(.easeOut(duration: 0.2)) {
-                proxy.scrollTo("typing-indicator", anchor: .bottom)
+                proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
             }
-        } else if let lastID = messages.last?.id {
+            try? await Task.sleep(for: .milliseconds(150))
             withAnimation(.easeOut(duration: 0.2)) {
-                proxy.scrollTo(lastID, anchor: .bottom)
+                proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
             }
         }
     }

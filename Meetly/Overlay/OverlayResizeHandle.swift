@@ -22,8 +22,32 @@ final class OverlayResizeHandleView: NSView {
         bounds.contains(point) ? self : nil
     }
 
+    // Cursor rects only fire in the key window; the overlay usually isn't.
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(
+            rect: .zero,
+            options: [.cursorUpdate, .mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            owner: self
+        ))
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+        NSCursor.resizeUpDown.set()
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        NSCursor.resizeUpDown.set()
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        NSCursor.arrow.set()
+    }
+
     override func mouseDown(with event: NSEvent) {
         guard let window else { return }
+        NSCursor.resizeUpDown.set()
 
         // Steal the drag from the floating panel's background-move behavior.
         let wasMovable = window.isMovableByWindowBackground
@@ -48,6 +72,7 @@ final class OverlayResizeHandleView: NSView {
                 break
             }
 
+            NSCursor.resizeUpDown.set()
             let delta = startMouseY - NSEvent.mouseLocation.y
             let nextHeight = OverlayGlassStyle.clampContentHeight(startHeight + delta)
             MainActor.assumeIsolated {

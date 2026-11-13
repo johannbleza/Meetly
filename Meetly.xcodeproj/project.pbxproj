@@ -11,7 +11,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
-		210189DC301E396300BDB8C3 /* Meetly.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Meetly.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		210189DC301E396300BDB8C3 /* Meets.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Meets.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -45,7 +45,7 @@
 		210189DD301E396300BDB8C3 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				210189DC301E396300BDB8C3 /* Meetly.app */,
+				210189DC301E396300BDB8C3 /* Meets.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -73,7 +73,7 @@
 				A1B2C3D4E5F6A7B8C9D0E1F4 /* WhisperKit */,
 			);
 			productName = Meetly;
-			productReference = 210189DC301E396300BDB8C3 /* Meetly.app */;
+			productReference = 210189DC301E396300BDB8C3 /* Meets.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -264,11 +264,11 @@
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_NSAppleEventsUsageDescription = "Meetly checks your open browser tabs for a meeting link (Google Meet, Teams, Zoom and others) while your browser is using the microphone. Tab addresses are never saved.";
+				INFOPLIST_KEY_NSAppleEventsUsageDescription = "Meets checks your open browser tabs for a meeting link (Google Meet, Teams, Zoom and others) while your browser is using the microphone. Tab addresses are never saved.";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Meetly needs microphone access to transcribe what you say.";
-				INFOPLIST_KEY_NSScreenCaptureUsageDescription = "Meetly captures meeting audio from other participants.";
-				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Meetly transcribes meetings on your Mac using on-device speech recognition.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Meets needs microphone access to transcribe what you say.";
+				INFOPLIST_KEY_NSScreenCaptureUsageDescription = "Meets captures meeting audio from other participants.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Meets transcribes meetings on your Mac using on-device speech recognition.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -280,7 +280,8 @@
 					FoundationModels,
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = johann.Meetly;
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_MODULE_NAME = Meetly;
+				PRODUCT_NAME = Meets;
 				REGISTER_APP_GROUPS = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
@@ -303,11 +304,11 @@
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_NSAppleEventsUsageDescription = "Meetly checks your open browser tabs for a meeting link (Google Meet, Teams, Zoom and others) while your browser is using the microphone. Tab addresses are never saved.";
+				INFOPLIST_KEY_NSAppleEventsUsageDescription = "Meets checks your open browser tabs for a meeting link (Google Meet, Teams, Zoom and others) while your browser is using the microphone. Tab addresses are never saved.";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Meetly needs microphone access to transcribe what you say.";
-				INFOPLIST_KEY_NSScreenCaptureUsageDescription = "Meetly captures meeting audio from other participants.";
-				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Meetly transcribes meetings on your Mac using on-device speech recognition.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Meets needs microphone access to transcribe what you say.";
+				INFOPLIST_KEY_NSScreenCaptureUsageDescription = "Meets captures meeting audio from other participants.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Meets transcribes meetings on your Mac using on-device speech recognition.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -319,7 +320,8 @@
 					FoundationModels,
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = johann.Meetly;
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_MODULE_NAME = Meetly;
+				PRODUCT_NAME = Meets;
 				REGISTER_APP_GROUPS = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;

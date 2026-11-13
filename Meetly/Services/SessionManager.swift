@@ -16,6 +16,12 @@ enum OverlayPresentation: Equatable {
     case expanded
 }
 
+/// Where the overlay lives: grown out of the notch, or pulled out into its own floating panel.
+enum OverlayDock: Equatable {
+    case notch
+    case floating
+}
+
 @MainActor
 @Observable
 final class SessionManager {
@@ -45,9 +51,10 @@ final class SessionManager {
     private(set) var isMicrophoneMuted = false
     private(set) var sessionStartedAt: Date?
     private(set) var overlayPresentation: OverlayPresentation = .hidden
+    /// Every meeting starts in the notch; pulling the overlay out lasts until the meeting ends.
+    private(set) var overlayDock: OverlayDock = .notch
     private(set) var aiProviderSelection: AIProvider = AppSettings.aiProvider
     private(set) var lastCompletedSessionID: UUID?
-    var requestedHomePanel: HomePanel?
     /// A call waiting for the user to choose whether to record it.
     private(set) var detectedMeetingPrompt: DetectedMeeting?
     /// When the recording will stop on its own because the call ended.
@@ -84,6 +91,11 @@ final class SessionManager {
     private var overlayShownForPrompt = false
     /// Set while recording into an earlier meeting, so stopping with nothing new can put it back as it was.
     private var continuation: Continuation?
+    #if DEBUG
+    /// Scripted overlay states for tuning the notch (`NotchDemoDriver`); detection stays out of the way.
+    var isNotchDemoActive = false
+    private var notchDemoTask: Task<Void, Never>?
+    #endif
 
     private let transcriptMergePauseThreshold: TimeInterval = 3
     /// Meeting audio older than this can't explain a new mic transcript, even if its own transcript is late.
@@ -149,11 +161,6 @@ final class SessionManager {
         meetingDetector.start()
     }
 
-    func openSettings() {
-        requestedHomePanel = .settings
-        MainWindowController.shared.showMainWindow()
-    }
-
     func toggleOverlay() {
         if overlayPresentation == .hidden {
             showOverlay()
@@ -165,15 +172,20 @@ final class SessionManager {
     func handleOverlayShortcut() {
         switch state {
         case .idle, .recording, .paused:
-            toggleOverlay()
+            if overlayPresentation != .hidden, !OverlayPanelController.shared.isOnActiveScreen {
+                // It's open on another display: bring it here instead of hiding it.
+                showOverlay(followingPointer: true)
+            } else {
+                toggleOverlay()
+            }
         case .summarizing:
             break
         }
     }
 
-    func showOverlay() {
+    func showOverlay(followingPointer: Bool = false) {
         overlayPresentation = .expanded
-        OverlayPanelController.shared.show()
+        OverlayPanelController.shared.show(followingPointer: followingPointer)
         OverlayPanelController.shared.updateForPresentation(.expanded)
     }
 
@@ -189,15 +201,36 @@ final class SessionManager {
     }
 
     func foldOverlay() {
-        guard isMeetingActive else { return }
+        guard isMeetingActive, overlayDock == .floating else { return }
         overlayPresentation = .folded
         OverlayPanelController.shared.updateForPresentation(.folded)
     }
 
     func expandOverlay() {
-        guard isMeetingActive else { return }
+        guard isMeetingActive, overlayDock == .floating else { return }
         overlayPresentation = .expanded
         OverlayPanelController.shared.updateForPresentation(.expanded)
+    }
+
+    /// Pulls the overlay out of the notch into the floating panel, e.g. to type a follow-up.
+    func popOutOverlay() {
+        guard overlayDock == .notch else { return }
+        overlayPresentation = .expanded
+        OverlayPanelController.shared.popOut()
+    }
+
+    /// Flies the floating overlay back into the notch.
+    func dockOverlay() {
+        guard overlayDock == .floating else { return }
+        overlayPresentation = .expanded
+        OverlayPanelController.shared.dockOverlay()
+    }
+
+    /// Records where the overlay ended up. Called by `OverlayPanelController` as its handoff
+    /// animations finish, so menus and toolbars always match what's on screen.
+    func setOverlayDock(_ dock: OverlayDock) {
+        guard overlayDock != dock else { return }
+        overlayDock = dock
     }
 
     func startMeeting() async {
@@ -314,8 +347,15 @@ final class SessionManager {
                 warningMessage = [warningMessage, notice].compactMap { $0 }.joined(separator: " ")
             }
 
-            MainWindowController.shared.hideMainWindow()
-            OverlayPanelController.shared.show()
+            if overlayDock == .floating, OverlayPanelController.shared.isFloatingVisible {
+                // Started from a popped-out prompt: meetings always start in the notch.
+                MainWindowController.shared.hideMainWindow()
+                OverlayPanelController.shared.dockOverlay()
+            } else {
+                overlayDock = .notch
+                // The main window pours up into the notch, which opens into the overlay.
+                OverlayPanelController.shared.showAbsorbingMainWindow()
+            }
             OverlayPanelController.shared.updateForPresentation(.expanded)
         } catch {
             errorMessage = error.localizedDescription
@@ -364,8 +404,7 @@ final class SessionManager {
             if MainWindowController.shared.isMainWindowVisible {
                 MainWindowController.shared.showMainWindow()
             } else {
-                OverlayPanelController.shared.show()
-                OverlayPanelController.shared.activateForInput()
+                OverlayPanelController.shared.presentKeyWindowForPicker()
             }
         }
     }
@@ -464,8 +503,9 @@ final class SessionManager {
         releaseHeldMicFinals()
 
         overlayPresentation = .hidden
-        OverlayPanelController.shared.hide()
-        MainWindowController.shared.showMainWindow()
+        // The overlay pours back out into the main window. Reads the dock before it's reset.
+        OverlayPanelController.shared.hideIntoMainWindow()
+        overlayDock = .notch
 
         if let currentSession {
             savePartialsIfTranscriptEmpty(in: currentSession)
@@ -582,6 +622,9 @@ final class SessionManager {
 
     /// Brings prompts and auto-stop in line with the current call. Safe to run at any time.
     private func reconcileDetection() {
+        #if DEBUG
+        if isNotchDemoActive { return }
+        #endif
         let activeMeeting = meetingDetector.activeMeeting
 
         if let suppressedSource, activeMeeting?.source != suppressedSource {
@@ -826,7 +869,7 @@ final class SessionManager {
         if !audioCaptureService.canCaptureScreenshot {
             await enableSystemAudio()
             guard audioCaptureService.canCaptureScreenshot else {
-                showScreenCaptureFailure("Choose a display in the share picker so Meetly can capture your screen.")
+                showScreenCaptureFailure("Choose a display in the share picker so Meets can capture your screen.")
                 return nil
             }
         } else if let targetDisplayID,
@@ -842,7 +885,7 @@ final class SessionManager {
                 isPickingSystemAudio = false
                 noteRecordingActivity()
                 showScreenCaptureFailure(
-                    "Meetly can only capture the display shared for meeting audio. Choose this screen in the share picker to capture it."
+                    "Meets can only capture the display shared for meeting audio. Choose this screen in the share picker to capture it."
                 )
                 return nil
             }
@@ -1171,3 +1214,151 @@ final class SessionManager {
         }
     }
 }
+
+#if DEBUG
+// MARK: - Notch demo
+
+extension SessionManager {
+    /// Puts the overlay into a scripted state without audio, the store or the AI tools, so the
+    /// notch can be recorded and tuned. Driven by `NotchDemoDriver`.
+    func debugApplyNotchDemo(_ step: String) {
+        switch step {
+        case "idle", "detected":
+            notchDemoTask?.cancel()
+            resetNotchDemoTranscript()
+            state = .idle
+            sessionStartedAt = nil
+            errorMessage = nil
+            detectedMeetingPrompt = step == "detected"
+                ? DetectedMeeting(source: .otherApp(bundleID: "us.zoom.xos"), name: "Zoom", isConfirmedMeeting: true)
+                : nil
+            showOverlay()
+        case "recording":
+            notchDemoTask?.cancel()
+            resetNotchDemoTranscript()
+            detectedMeetingPrompt = nil
+            state = .recording
+            sessionStartedAt = Date().addingTimeInterval(-754)
+            if overlayPresentation == .hidden {
+                showOverlay()
+            }
+        case "speak":
+            playNotchDemoSpeech(
+                "Thanks everyone for joining. Before we get into the roadmap, can we agree on what ships in the first release and who owns the migration?",
+                speaker: .other
+            )
+        case "speakMe":
+            playNotchDemoSpeech(
+                "I think the migration should stay with the platform team, and we keep the release scoped to sign-in and billing.",
+                speaker: .me
+            )
+        case "final":
+            notchDemoTask?.cancel()
+            finalizeNotchDemoCaptions()
+        case "ask":
+            activeQuestion = OverlayQuickPrompt.whatToSay
+            activeQuestionImages = []
+            activeAnswer = nil
+            isAwaitingAnswer = true
+        case "answer":
+            isAwaitingAnswer = false
+            activeAnswer = "Confirm the scope out loud: \"So release one is sign-in and billing, and platform owns the migration.\" "
+                + "Then ask who signs off on the billing cutover date, since nobody has claimed it yet."
+        case "dismiss":
+            dismissActiveAnswer()
+        case "countdown":
+            autoStopDeadline = Date().addingTimeInterval(15)
+        case "keep":
+            autoStopDeadline = nil
+            idleStopDeadline = nil
+        case "pause":
+            state = .paused
+        case "resume":
+            state = .recording
+        case "mute":
+            isMicrophoneMuted.toggle()
+        case "mainWindow":
+            MainWindowController.shared.showMainWindow()
+        case "windowToNotch":
+            // A meeting starting from the main window: it's sucked up into the notch.
+            notchDemoTask?.cancel()
+            resetNotchDemoTranscript()
+            detectedMeetingPrompt = nil
+            state = .recording
+            sessionStartedAt = Date().addingTimeInterval(-754)
+            overlayPresentation = .expanded
+            overlayDock = .notch
+            OverlayPanelController.shared.showAbsorbingMainWindow()
+        case "notchToWindow":
+            // The meeting stopping: the main window pours back out of the notch.
+            notchDemoTask?.cancel()
+            overlayPresentation = .hidden
+            OverlayPanelController.shared.hideIntoMainWindow()
+            overlayDock = .notch
+            resetNotchDemoTranscript()
+            state = .idle
+            sessionStartedAt = nil
+        case "popOut":
+            popOutOverlay()
+        case "dock":
+            dockOverlay()
+        case "picker":
+            // The real share-picker path a meeting start takes with the main window hidden, so
+            // the overlay (here, the notch) has to be the picker's key window. Records nothing.
+            MainWindowController.shared.hideMainWindow()
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.isPickingSystemAudio = true
+                await self.enableSystemAudioAtStart(forcePicker: true)
+                self.isPickingSystemAudio = false
+            }
+        case "show":
+            showOverlay()
+        case "hide":
+            hideOverlay()
+        case "stop":
+            notchDemoTask?.cancel()
+            hideOverlay()
+            resetNotchDemoTranscript()
+            state = .idle
+            sessionStartedAt = nil
+        default:
+            break
+        }
+    }
+
+    private func playNotchDemoSpeech(_ text: String, speaker: ChatMessageSender) {
+        notchDemoTask?.cancel()
+        finalizeNotchDemoCaptions()
+        notchDemoTask = Task { @MainActor [weak self] in
+            let words = text.split(separator: " ")
+            for count in 1...words.count {
+                try? await Task.sleep(for: .milliseconds(170))
+                guard let self, !Task.isCancelled else { return }
+                self.showCaption(words.prefix(count).joined(separator: " "), for: speaker)
+            }
+            try? await Task.sleep(for: .milliseconds(600))
+            guard let self, !Task.isCancelled else { return }
+            self.finalizeNotchDemoCaptions()
+        }
+    }
+
+    private func finalizeNotchDemoCaptions() {
+        for caption in liveCaptions {
+            chatMessages.append(ChatMessage(kind: .transcript, sender: caption.speaker, text: caption.text))
+        }
+        liveCaptions = []
+    }
+
+    private func resetNotchDemoTranscript() {
+        chatMessages = []
+        liveCaptions = []
+        activeQuestion = nil
+        activeAnswer = nil
+        isAwaitingAnswer = false
+        autoStopDeadline = nil
+        idleStopDeadline = nil
+        isMicrophoneMuted = false
+    }
+}
+#endif

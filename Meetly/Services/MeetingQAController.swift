@@ -38,6 +38,23 @@ final class MeetingQAController {
         hasContent && isAvailable && !isAwaitingAnswer
     }
 
+    var canClearHistory: Bool {
+        !isAwaitingAnswer && !messages.isEmpty
+    }
+
+    /// Deletes the saved Ask AI history for this meeting, including questions asked in the overlay during the call.
+    func clearHistory() {
+        guard !isAwaitingAnswer else { return }
+        let saved = session.qaMessages ?? []
+        session.qaMessages = []
+        if let context = session.modelContext {
+            saved.forEach(context.delete)
+            try? context.save()
+        }
+        pendingMessages.removeAll()
+        errorMessage = nil
+    }
+
     func ask(_ text: String) async {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !isAwaitingAnswer else { return }

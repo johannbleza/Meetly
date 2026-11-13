@@ -16,7 +16,7 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "210189DB301E396300BDB8C3"
-               BuildableName = "Meetly.app"
+               BuildableName = "Meets.app"
                BlueprintName = "Meetly"
                ReferencedContainer = "container:Meetly.xcodeproj">
             </BuildableReference>
@@ -46,7 +46,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "210189DB301E396300BDB8C3"
-            BuildableName = "Meetly.app"
+            BuildableName = "Meets.app"
             BlueprintName = "Meetly"
             ReferencedContainer = "container:Meetly.xcodeproj">
          </BuildableReference>
@@ -63,7 +63,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "210189DB301E396300BDB8C3"
-            BuildableName = "Meetly.app"
+            BuildableName = "Meets.app"
             BlueprintName = "Meetly"
             ReferencedContainer = "container:Meetly.xcodeproj">
          </BuildableReference>

@@ -18,30 +18,10 @@ enum MeetingMarkdownExporter {
         lines.append(metadata.joined(separator: " · "))
         lines.append("")
 
-        if let summary = session.summary {
-            lines.append("## Summary")
+        let summary = summaryMarkdown(for: session)
+        if !summary.isEmpty {
+            lines.append(summary)
             lines.append("")
-            lines.append(summary.summaryText)
-            lines.append("")
-
-            if !summary.keyPoints.isEmpty {
-                lines.append("## Key Points")
-                lines.append("")
-                for point in summary.keyPoints {
-                    lines.append("- \(point)")
-                }
-                lines.append("")
-            }
-
-            if !summary.sortedActionItems.isEmpty {
-                lines.append("## Action Items")
-                lines.append("")
-                for item in summary.sortedActionItems {
-                    let checkbox = item.isCompleted ? "[x]" : "[ ]"
-                    lines.append("- \(checkbox) \(item.text)")
-                }
-                lines.append("")
-            }
         }
 
         lines.append("## Transcript")
@@ -61,6 +41,59 @@ enum MeetingMarkdownExporter {
         }
 
         return lines.joined(separator: "\n")
+    }
+
+    /// The summary, key points and action items as Markdown, or an empty string with no summary.
+    static func summaryMarkdown(for session: MeetingSession) -> String {
+        guard let summary = session.summary else { return "" }
+        var lines: [String] = ["## Summary", "", summary.summaryText]
+
+        if !summary.sortedActionItems.isEmpty {
+            lines += ["", "## Action Items", ""]
+            for item in summary.sortedActionItems {
+                let checkbox = item.isCompleted ? "[x]" : "[ ]"
+                lines.append("- \(checkbox) \(item.text)")
+            }
+        }
+
+        if !summary.keyPoints.isEmpty {
+            lines += ["", "## Key Points", ""]
+            lines += summary.keyPoints.map { "- \($0)" }
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
+    /// The transcript as plain text, one "Speaker (m:ss): text" line per segment.
+    static func transcriptText(for session: MeetingSession) -> String {
+        session.segments
+            .sorted { $0.timestamp < $1.timestamp }
+            .map { segment in
+                let elapsed = elapsedTimestamp(segment.timestamp, since: session.startedAt)
+                return "\(segment.speaker.label) (\(elapsed)): \(segment.text)"
+            }
+            .joined(separator: "\n\n")
+    }
+
+    /// Time since the meeting started, as "m:ss" or "h:mm:ss".
+    static func elapsedTimestamp(_ date: Date, since start: Date) -> String {
+        clockDuration(date.timeIntervalSince(start))
+    }
+
+    /// A duration as "m:ss" or "h:mm:ss".
+    static func clockDuration(_ interval: TimeInterval) -> String {
+        let total = max(0, Int(interval))
+        let hours = total / 3600
+        let minutes = (total % 3600) / 60
+        let seconds = total % 60
+        return hours > 0
+            ? String(format: "%d:%02d:%02d", hours, minutes, seconds)
+            : String(format: "%d:%02d", minutes, seconds)
+    }
+
+    static func copyToPasteboard(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
     }
 
     static func export(_ session: MeetingSession) {

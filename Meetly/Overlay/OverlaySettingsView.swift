@@ -56,6 +56,10 @@ struct OverlaySettingsView: View {
         .formStyle(.grouped)
         .frame(width: 300)
         .padding(.vertical, 4)
+        .onAppear {
+            // The popover is a window of its own, created just now; keep it out of screen shares too.
+            DispatchQueue.main.async { ScreenShareExclusion.applyToAllWindows() }
+        }
     }
 }
 

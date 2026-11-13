@@ -4,6 +4,7 @@ import SwiftUI
 
 struct MenuBarContentView: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.openWindow) private var openWindow
     @Bindable var sessionManager: SessionManager
 
     var body: some View {
@@ -43,7 +44,7 @@ struct MenuBarContentView: View {
         windowToggleItem
 
         Button {
-            sessionManager.openSettings()
+            SettingsWindow.open(with: openWindow)
         } label: {
             Label("Settings…", systemImage: "gearshape")
         }
@@ -95,21 +96,34 @@ struct MenuBarContentView: View {
         }
 
         if sessionManager.isOverlayVisible {
-            switch sessionManager.overlayPresentation {
-            case .folded:
+            if sessionManager.overlayDock == .notch {
                 Button {
-                    sessionManager.expandOverlay()
+                    sessionManager.popOutOverlay()
                 } label: {
-                    Label("Expand Overlay", systemImage: "chevron.down")
+                    Label("Pop Out Overlay", systemImage: "pip.exit")
                 }
-            case .expanded:
+            } else {
                 Button {
-                    sessionManager.foldOverlay()
+                    sessionManager.dockOverlay()
                 } label: {
-                    Label("Fold Overlay", systemImage: "chevron.up")
+                    Label("Dock Overlay in Notch", systemImage: "pip.enter")
                 }
-            case .hidden:
-                EmptyView()
+                switch sessionManager.overlayPresentation {
+                case .folded:
+                    Button {
+                        sessionManager.expandOverlay()
+                    } label: {
+                        Label("Expand Overlay", systemImage: "chevron.down")
+                    }
+                case .expanded:
+                    Button {
+                        sessionManager.foldOverlay()
+                    } label: {
+                        Label("Fold Overlay", systemImage: "chevron.up")
+                    }
+                case .hidden:
+                    EmptyView()
+                }
             }
         }
 
@@ -147,7 +161,7 @@ struct MenuBarContentView: View {
         }
 
         Button {
-            sessionManager.openSettings()
+            SettingsWindow.open(with: openWindow)
         } label: {
             Label("Settings…", systemImage: "gearshape")
         }
@@ -199,7 +213,7 @@ struct MenuBarContentView: View {
         Button {
             NSApplication.shared.terminate(nil)
         } label: {
-            Label("Quit Meetly", systemImage: "power")
+            Label("Quit Meets", systemImage: "power")
         }
     }
 

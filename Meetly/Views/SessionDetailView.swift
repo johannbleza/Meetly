@@ -1,6 +1,8 @@
 import SwiftData
 import SwiftUI
 
+/// A saved meeting: a single centered column with the date and title, Summary / Transcript / Ask AI
+/// tabs, and a floating "Resume" + "Ask about this meeting…" bar at the bottom.
 struct SessionDetailView: View {
     let session: MeetingSession
     var onContinue: (() -> Void)?
@@ -8,11 +10,18 @@ struct SessionDetailView: View {
     var onUnarchive: (() -> Void)?
     var onExport: (() -> Void)?
     var onDelete: (() -> Void)?
+    /// While the home page's featured card rises into this header (see `MeetingHeroMotion`):
+    /// the card stands in for the date and title, and the tabs open up between the title and
+    /// the summary.
+    var hero: MeetingHeroMotion?
+    /// Where this page reports the header and tab bar positions the card's motion aims for.
+    var heroAnchor: MeetingHeroAnchor?
 
     @Environment(\.modelContext) private var modelContext
     @State private var qaController: MeetingQAController?
     @State private var actionItemsController: ActionItemsController?
     @State private var summaryController: MeetingSummaryController?
+    @State private var selectedTab: DetailTab = .summary
     @State private var questionText = ""
     @State private var searchText = ""
     /// `searchText` after a short debounce; everything below filters by this.
@@ -22,97 +31,55 @@ struct SessionDetailView: View {
     @State private var transcriptMatchCount = 0
     @State private var transcriptRows: [TranscriptRowModel] = []
     @State private var loadedTranscriptSessionID: UUID?
+    @State private var didCopyTranscript = false
     @FocusState private var isSearchFocused: Bool
 
-    var body: some View {
-        VStack(spacing: 0) {
-            SessionDetailHeader(
-                session: session,
-                searchText: $searchText,
-                isSearchFocused: $isSearchFocused,
-                matchCount: isSearching ? matchCount : nil,
-                onContinue: onContinue,
-                onArchive: onArchive,
-                onUnarchive: onUnarchive,
-                onExport: onExport,
-                onDelete: onDelete
-            )
-            AppDivider(axis: .horizontal)
+    private static let columnWidth = AppTheme.pageMaxWidth
+    private static let bottomAnchorID = "detail-bottom"
 
+    var body: some View {
+        ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
-                    if isSearching && matchCount == 0 {
-                        searchEmptyState
-                    } else {
-                        if showsSummary {
-                            SessionSummarySection(
-                                session: session,
-                                summaryController: summaryController,
-                                highlightQuery: keywordQuery
-                            )
+                    header
+                        .onGeometryChange(for: CGFloat.self) { proxy in
+                            proxy.frame(in: .named(MeetingHeroAnchor.coordinateSpace)).minY
+                        } action: { heroAnchor?.pageHeaderTop = $0 }
+                    tabBar
+                        .padding(.top, 22)
+                        .padding(.bottom, 24)
+                        .onGeometryChange(for: CGFloat.self) { proxy in
+                            proxy.size.height
+                        } action: { heroAnchor?.tabBlockHeight = $0 }
+                        // Opens from the bottom: the gap under the title grows into the tabs.
+                        .mask(alignment: .bottom) {
+                            Rectangle().frame(height: hero.map { $0.tabBlockHeight - $0.summaryShift * (1 - $0.progress) })
                         }
-                        SessionKeyPointsSection(
-                            points: matchingKeyPoints,
-                            highlightQuery: keywordQuery
-                        )
-                        if showsActionItems {
-                            SessionActionItemsSection(
-                                items: matchingActionItems,
-                                controller: actionItemsController,
-                                highlightQuery: keywordQuery,
-                                isSearching: isSearching
-                            )
-                        }
-                        SessionAskAISection(
-                            qaController: qaController,
-                            highlightQuery: keywordQuery,
-                            matchingMessages: matchingAskAIMessages,
-                            isSearching: isSearching
-                        )
-
-                        if showsTranscript {
-                            AppSectionHeader(title: "Transcript")
-                                .padding(.bottom, 10)
-
-                            let rows = displayedTranscriptRows
-                            if rows.isEmpty {
-                                Text("No transcript captured.")
-                                    .font(.appBody)
-                                    .foregroundStyle(AppTheme.textSecondary)
-                            } else {
-                                ForEach(rows) { row in
-                                    TranscriptRowView(row: row)
-                                        .equatable()
-                                }
-                            }
-                        }
-                    }
+                        .offset(y: heroBodyOffset)
+                    tabContent
+                        .offset(y: heroBodyOffset)
+                    Color.clear
+                        .frame(height: 1)
+                        .id(Self.bottomAnchorID)
                 }
-                .padding(24)
-                .frame(maxWidth: .infinity, alignment: .leading)
                 .textSelection(.enabled)
+                .frame(maxWidth: Self.columnWidth, alignment: .leading)
+                .padding(.horizontal, 32)
+                .padding(.top, 28)
+                // Room to scroll the last lines out from under the floating ask bar.
+                .padding(.bottom, 110)
+                .frame(maxWidth: .infinity)
             }
-
-            AppDivider(axis: .horizontal)
-
-            MeetingQAInputBar(
-                text: $questionText,
-                isDisabled: qaController.map { !$0.canAsk } ?? true
-            ) { question in
-                Task { await qaController?.ask(question) }
+            .onChange(of: qaController?.messages.last?.id) { _, _ in
+                scrollAskAIToBottom(proxy)
+            }
+            .onChange(of: qaController?.isAwaitingAnswer) { _, _ in
+                scrollAskAIToBottom(proxy)
             }
         }
+        .overlay(alignment: .bottom) { askBar }
         .appPanelBackground(AppTheme.bgPrimary)
-        .background(alignment: .topLeading) {
-            Button("Find in Meeting") {
-                isSearchFocused = true
-            }
-            .keyboardShortcut("f", modifiers: .command)
-            .frame(width: 0, height: 0)
-            .opacity(0)
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
-        }
+        .background(alignment: .topLeading) { keyboardShortcuts }
         .onAppear {
             configureControllers()
             loadTranscriptRows()
@@ -127,6 +94,7 @@ struct SessionDetailView: View {
             searchText = ""
             appliedQuery = ""
             isSearchFocused = false
+            didCopyTranscript = false
             loadTranscriptRows()
         }
         .task(id: searchText) {
@@ -142,6 +110,276 @@ struct SessionDetailView: View {
         }
     }
 
+    // MARK: Header
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .center, spacing: 12) {
+                metadataLine
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .opacity(hero == nil ? 1 : 0)
+                headerActions
+                    .opacity(Double(hero?.progress ?? 1))
+            }
+            Text(session.displayTitle)
+                .font(.system(size: 32, weight: .semibold))
+                .foregroundStyle(AppTheme.textPrimary)
+                .lineLimit(3)
+                .fixedSize(horizontal: false, vertical: true)
+                .opacity(hero == nil ? 1 : 0)
+        }
+    }
+
+    /// Everything under the header starts with its summary exactly under the featured card's
+    /// summary, and moves with it into place.
+    private var heroBodyOffset: CGFloat {
+        guard let hero else { return 0 }
+        return (-hero.lift - hero.summaryShift) * (1 - hero.progress)
+    }
+
+    private var metadataLine: some View {
+        HStack(spacing: 6) {
+            Text(session.startedAt.formatted(.dateTime.weekday(.wide).month(.abbreviated).day()))
+            Text("•")
+            Text(session.startedAt.formatted(date: .omitted, time: .shortened))
+            if let duration = shortDuration {
+                Text("•")
+                Text(duration)
+            }
+            if session.isArchivedValue {
+                Text("Archived")
+                    .font(.system(size: 11, weight: .medium))
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(AppTheme.bgInput))
+                    .padding(.leading, 4)
+            }
+        }
+        .font(.system(size: 13))
+        .foregroundStyle(AppTheme.textSecondary)
+        .lineLimit(1)
+    }
+
+    private var shortDuration: String? {
+        guard let duration = session.duration else { return nil }
+        let minutes = Int(duration.rounded()) / 60
+        if minutes == 0 { return "\(Int(duration.rounded()))s" }
+        return minutes >= 60 ? "\(minutes / 60)h \(minutes % 60)m" : "\(minutes)m"
+    }
+
+    private var headerActions: some View {
+        MeetingShareButton(
+            session: session,
+            onExport: onExport,
+            onArchive: onArchive,
+            onUnarchive: onUnarchive,
+            onDelete: onDelete
+        )
+    }
+
+    // MARK: Tabs
+
+    private var tabBar: some View {
+        HStack(spacing: 12) {
+            AppSegmentedControl(
+                selection: $selectedTab,
+                segments: DetailTab.allCases.map { tab in
+                    .init(value: tab, title: tab.title, badge: tabBadge(tab))
+                },
+                height: 32
+            )
+            Spacer(minLength: 0)
+            AppSearchField(
+                text: $searchText,
+                placeholder: "Search in meeting",
+                accessory: isSearching ? String(matchCount) : nil,
+                isFocused: $isSearchFocused
+            )
+            .frame(maxWidth: 220)
+            .help("Search in meeting (⌘F)")
+            .accessibilityLabel("Search in meeting")
+            .accessibilityHint("Finds keywords in the summary, transcript, and Ask AI history. Press Command F to focus.")
+        }
+    }
+
+    /// While searching, each tab shows how many matches it has.
+    private func tabBadge(_ tab: DetailTab) -> Int? {
+        guard isSearching else { return nil }
+        return matchCount(in: tab)
+    }
+
+    @ViewBuilder
+    private var tabContent: some View {
+        if isSearching && matchCount(in: selectedTab) == 0 {
+            searchEmptyState
+        } else {
+            switch selectedTab {
+            case .summary:
+                summaryTab
+            case .transcript:
+                transcriptTab
+            case .askAI:
+                MeetingAskAITab(
+                    qaController: qaController,
+                    highlightQuery: keywordQuery,
+                    onAsk: ask
+                )
+            }
+        }
+    }
+
+    // MARK: Summary tab
+
+    @ViewBuilder
+    private var summaryTab: some View {
+        if let summary = session.summary {
+            if !isSearching || KeywordHighlighter.matches(summary.summaryText, query: keywordQuery) {
+                HighlightedText(text: summary.summaryText, query: keywordQuery, font: .system(size: 15))
+                    .lineSpacing(5)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        } else if !isSearching {
+            EmptySummaryCard(controller: summaryController)
+        }
+
+        if !isSearching || !matchingActionItems.isEmpty {
+            SessionActionItemsSection(
+                items: matchingActionItems,
+                controller: actionItemsController,
+                highlightQuery: keywordQuery,
+                isSearching: isSearching
+            )
+        }
+
+        if !matchingKeyPoints.isEmpty {
+            SummarySectionHeading(title: "Key Points")
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(matchingKeyPoints, id: \.self) { point in
+                    HStack(alignment: .firstTextBaseline, spacing: 10) {
+                        Circle()
+                            .fill(AppTheme.textSecondary)
+                            .frame(width: 5, height: 5)
+                            .alignmentGuide(.firstTextBaseline) { $0[.bottom] + 4 }
+                        HighlightedText(text: point, query: keywordQuery, font: .system(size: 15))
+                            .lineSpacing(3)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+        }
+
+        if !isSearching, let summary = session.summary {
+            SummaryFooter(generatedAt: summary.generatedAt, controller: summaryController)
+                .padding(.top, 32)
+        }
+    }
+
+    // MARK: Transcript tab
+
+    @ViewBuilder
+    private var transcriptTab: some View {
+        let rows = displayedTranscriptRows
+        if rows.isEmpty {
+            Text("No transcript captured.")
+                .font(.system(size: 14))
+                .foregroundStyle(AppTheme.textSecondary)
+        } else {
+            HStack {
+                Spacer()
+                DetailPillButton(
+                    title: didCopyTranscript ? "Copied" : "Copy full transcript",
+                    systemImage: didCopyTranscript ? "checkmark" : "doc.on.doc",
+                    isSubtle: true,
+                    action: copyTranscript
+                )
+            }
+            .padding(.bottom, 4)
+
+            ForEach(rows) { row in
+                TranscriptRowView(row: row)
+                    .equatable()
+            }
+        }
+    }
+
+    private func copyTranscript() {
+        MeetingMarkdownExporter.copyToPasteboard(MeetingMarkdownExporter.transcriptText(for: session))
+        didCopyTranscript = true
+        Task {
+            try? await Task.sleep(for: .seconds(1.5))
+            didCopyTranscript = false
+        }
+    }
+
+    // MARK: Ask bar
+
+    private var askBar: some View {
+        VStack(spacing: 0) {
+            LinearGradient(
+                colors: [AppTheme.bgPrimary.opacity(0), AppTheme.bgPrimary],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: 36)
+            .allowsHitTesting(false)
+
+            MeetingAskBar(
+                text: $questionText,
+                isDisabled: !(qaController?.canAsk ?? false),
+                onResume: onContinue,
+                onSend: ask
+            )
+            .frame(maxWidth: Self.columnWidth)
+            .padding(.horizontal, 32)
+            .padding(.bottom, 18)
+            .frame(maxWidth: .infinity)
+            .background(AppTheme.bgPrimary)
+        }
+    }
+
+    private func ask(_ question: String) {
+        guard let qaController else { return }
+        withAnimation(.snappy(duration: 0.2)) {
+            selectedTab = .askAI
+        }
+        Task { await qaController.ask(question) }
+    }
+
+    private func scrollAskAIToBottom(_ proxy: ScrollViewProxy) {
+        guard selectedTab == .askAI else { return }
+        // Wait for the new bubble to be measured, then settle once more after it has.
+        Task { @MainActor in
+            await Task.yield()
+            withAnimation(.easeOut(duration: 0.2)) {
+                proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
+            }
+            try? await Task.sleep(for: .milliseconds(150))
+            withAnimation(.easeOut(duration: 0.2)) {
+                proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
+            }
+        }
+    }
+
+    // MARK: Keyboard shortcuts
+
+    private var keyboardShortcuts: some View {
+        ZStack {
+            Button("Find in Meeting") { isSearchFocused = true }
+                .keyboardShortcut("f", modifiers: .command)
+            ForEach(Array(DetailTab.allCases.enumerated()), id: \.element) { index, tab in
+                Button(tab.title) { selectedTab = tab }
+                    .keyboardShortcut(KeyEquivalent(Character(String(index + 1))), modifiers: .command)
+            }
+        }
+        .frame(width: 0, height: 0)
+        .opacity(0)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+
+    // MARK: Search
+
     private var keywordQuery: String {
         appliedQuery
     }
@@ -154,7 +392,7 @@ struct SessionDetailView: View {
         if loadedTranscriptSessionID == session.id {
             return transcriptRows
         }
-        return Self.makeTranscriptRows(from: session, highlightQuery: "")
+        return Self.makeTranscriptRows(from: session)
     }
 
     private var displayedTranscriptRows: [TranscriptRowModel] {
@@ -175,9 +413,7 @@ struct SessionDetailView: View {
             count += occurrences
             rows.append(row.highlighted(with: keywordQuery))
         }
-        searchedTranscriptRows = rows.enumerated().map { index, row in
-            row.withDivider(index != rows.count - 1)
-        }
+        searchedTranscriptRows = rows
         transcriptMatchCount = count
     }
 
@@ -193,62 +429,66 @@ struct SessionDetailView: View {
         return items.filter { KeywordHighlighter.matches($0.text, query: keywordQuery) }
     }
 
-    private var matchingAskAIMessages: [ChatMessage] {
-        let messages = qaController?.messages ?? []
-        guard isSearching else { return messages }
-        return messages.filter { KeywordHighlighter.matches($0.text, query: keywordQuery) }
-    }
-
-    private var showsSummary: Bool {
-        guard isSearching else { return true }
-        guard let summaryText = session.summary?.summaryText else { return false }
-        return KeywordHighlighter.matches(summaryText, query: keywordQuery)
-    }
-
-    private var showsActionItems: Bool {
-        !isSearching || !matchingActionItems.isEmpty
-    }
-
-    private var showsTranscript: Bool {
-        !isSearching || !displayedTranscriptRows.isEmpty
-    }
-
-    private var matchCount: Int {
+    private func matchCount(in tab: DetailTab) -> Int {
         guard isSearching else { return 0 }
-        var count = 0
-        if let summary = session.summary {
-            count += KeywordHighlighter.occurrenceCount(in: summary.summaryText, query: keywordQuery)
+        switch tab {
+        case .summary:
+            guard let summary = session.summary else { return 0 }
+            var count = KeywordHighlighter.occurrenceCount(in: summary.summaryText, query: keywordQuery)
             for point in summary.keyPoints {
                 count += KeywordHighlighter.occurrenceCount(in: point, query: keywordQuery)
             }
             for item in summary.actionItems {
                 count += KeywordHighlighter.occurrenceCount(in: item.text, query: keywordQuery)
             }
+            return count
+        case .transcript:
+            return transcriptMatchCount
+        case .askAI:
+            return (qaController?.messages ?? []).reduce(0) { count, message in
+                count + KeywordHighlighter.occurrenceCount(in: message.text, query: keywordQuery)
+            }
         }
-        count += transcriptMatchCount
-        for message in qaController?.messages ?? [] {
-            count += KeywordHighlighter.occurrenceCount(in: message.text, query: keywordQuery)
-        }
-        return count
+    }
+
+    private var matchCount: Int {
+        DetailTab.allCases.reduce(0) { $0 + matchCount(in: $1) }
     }
 
     private var searchEmptyState: some View {
-        VStack(spacing: 8) {
-            Image(systemName: "text.magnifyingglass")
-                .font(.system(size: 24, weight: .light))
+        let elsewhere = DetailTab.allCases
+            .filter { $0 != selectedTab }
+            .compactMap { tab -> (DetailTab, Int)? in
+                let count = matchCount(in: tab)
+                return count > 0 ? (tab, count) : nil
+            }
+
+        return VStack(alignment: .leading, spacing: 12) {
+            Text("No matches for “\(keywordQuery)” in \(selectedTab.title).")
+                .font(.system(size: 14))
                 .foregroundStyle(AppTheme.textSecondary)
-            Text("No matches for “\(keywordQuery)”")
-                .font(.appBody)
-                .foregroundStyle(AppTheme.textPrimary)
-            Text("Try a different keyword in the summary, transcript, or action items.")
-                .font(.appCaption)
-                .foregroundStyle(AppTheme.textSecondary)
-                .multilineTextAlignment(.center)
+
+            if elsewhere.isEmpty {
+                Text("Try a different keyword.")
+                    .font(.system(size: 13))
+                    .foregroundStyle(AppTheme.textSecondary)
+            } else {
+                HStack(spacing: 8) {
+                    ForEach(elsewhere, id: \.0) { tab, count in
+                        DetailPillButton(
+                            title: "\(count) in \(tab.title)",
+                            systemImage: "arrow.right"
+                        ) {
+                            selectedTab = tab
+                        }
+                    }
+                }
+            }
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 48)
-        .accessibilityElement(children: .combine)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
+
+    // MARK: Data
 
     private func configureControllers() {
         qaController = MeetingQAController(session: session)
@@ -257,207 +497,206 @@ struct SessionDetailView: View {
     }
 
     private func loadTranscriptRows() {
-        transcriptRows = Self.makeTranscriptRows(from: session, highlightQuery: "")
+        transcriptRows = Self.makeTranscriptRows(from: session)
         loadedTranscriptSessionID = session.id
         updateTranscriptSearch()
     }
 
-    private static func makeTranscriptRows(from session: MeetingSession, highlightQuery: String) -> [TranscriptRowModel] {
-        let segments = session.segments.sorted { $0.timestamp < $1.timestamp }
-        let lastID = segments.last?.persistentModelID
-        return segments.map { segment in
-            TranscriptRowModel(
-                id: segment.persistentModelID,
-                timestampText: segment.timestamp.formatted(date: .omitted, time: .standard),
-                speaker: segment.speaker,
-                text: segment.text,
-                showDivider: segment.persistentModelID != lastID,
-                highlightQuery: highlightQuery
-            )
-        }
+    private static func makeTranscriptRows(from session: MeetingSession) -> [TranscriptRowModel] {
+        session.segments
+            .sorted { $0.timestamp < $1.timestamp }
+            .map { segment in
+                TranscriptRowModel(
+                    id: segment.persistentModelID,
+                    elapsedText: MeetingMarkdownExporter.elapsedTimestamp(segment.timestamp, since: session.startedAt),
+                    clockText: segment.timestamp.formatted(date: .omitted, time: .standard),
+                    speaker: segment.speaker,
+                    text: segment.text,
+                    highlightQuery: ""
+                )
+            }
     }
 }
 
-private struct SessionDetailHeader: View {
+/// "Share | ⌄": Share opens the macOS share sheet with the meeting as Markdown; the menu has
+/// copy, export, archive and delete. Its own view so the Markdown is only rebuilt when the meeting changes.
+private struct MeetingShareButton: View {
     let session: MeetingSession
-    @Binding var searchText: String
-    var isSearchFocused: FocusState<Bool>.Binding
-    var matchCount: Int?
-    var onContinue: (() -> Void)?
+    var onExport: (() -> Void)?
     var onArchive: (() -> Void)?
     var onUnarchive: (() -> Void)?
-    var onExport: (() -> Void)?
     var onDelete: (() -> Void)?
 
     var body: some View {
-        HStack(alignment: .center, spacing: 16) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(session.displayTitle)
-                    .font(.appTitle)
-                    .foregroundStyle(AppTheme.textPrimary)
-                    .lineLimit(2)
-
-                HStack(spacing: 12) {
-                    Text(session.startedAt.formatted(date: .complete, time: .shortened))
-                    if let duration = session.formattedDuration() {
-                        Text("·")
-                        Text(duration)
-                    }
-                }
-                .font(.appCaption)
-                .foregroundStyle(AppTheme.textSecondary)
-            }
-            .textSelection(.enabled)
-            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
-
-            AppSearchField(
-                text: $searchText,
-                placeholder: "Search in meeting",
-                accessory: matchCount.map(String.init),
-                isFocused: isSearchFocused
-            )
-            .frame(width: 240)
-            .layoutPriority(1)
-            .help("Search in meeting (⌘F)")
-            .accessibilityLabel("Search in meeting")
-            .accessibilityHint("Finds keywords in the summary, key points, action items, and transcript. Press Command F to focus.")
-
-            if let onContinue {
-                Button(action: onContinue) {
-                    Label("Continue Meeting", systemImage: "mic.fill")
-                        .font(.appBody.weight(.medium))
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.white)
-                .background(AppTheme.accent)
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .fixedSize()
-                .help("Keep recording into this meeting. The summary is regenerated when you stop.")
-            }
-
-            if onExport != nil || onArchive != nil || onUnarchive != nil || onDelete != nil {
-                Menu {
-                    if let onExport {
-                        Button("Export as Markdown") {
-                            onExport()
-                        }
-                    }
-                    if let onUnarchive {
-                        Button("Unarchive") {
-                            onUnarchive()
-                        }
-                    }
-                    if let onArchive {
-                        Button("Archive") {
-                            onArchive()
-                        }
-                    }
-                    if let onDelete {
-                        Divider()
-                        Button("Delete", role: .destructive) {
-                            onDelete()
-                        }
-                    }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                        .font(.system(size: 18))
-                        .foregroundStyle(AppTheme.textSecondary)
-                        .frame(width: 28, height: 28)
-                }
-                .menuStyle(.borderlessButton)
-                .accessibilityLabel("Meeting actions")
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 24)
-        .padding(.vertical, 16)
-        .background(AppTheme.bgSidebar)
-    }
-}
-
-private struct SessionSummarySection: View {
-    let session: MeetingSession
-    let summaryController: MeetingSummaryController?
-    var highlightQuery: String = ""
-
-    var body: some View {
-        DetailSectionBlock(title: "Summary") {
-            if let summary = session.summary {
-                VStack(alignment: .leading, spacing: 10) {
-                    HighlightedText(text: summary.summaryText, query: highlightQuery)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-
-                    if highlightQuery.isEmpty {
-                        regenerateSummaryControls(hasSummary: true)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            } else {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("No summary yet. Generate one from the meeting transcript.")
-                        .font(.appCaption)
-                        .foregroundStyle(AppTheme.textSecondary)
-                    regenerateSummaryControls(hasSummary: false)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
-        .padding(.bottom, 24)
-    }
-
-    @ViewBuilder
-    private func regenerateSummaryControls(hasSummary: Bool) -> some View {
-        if let summaryController {
-            if let errorMessage = summaryController.errorMessage {
-                Text(errorMessage)
-                    .font(.appCaption)
-                    .foregroundStyle(AppTheme.danger)
-            }
-
-            Button {
-                Task { await summaryController.generate() }
-            } label: {
+        HStack(spacing: 0) {
+            ShareLink(
+                item: MeetingMarkdownExporter.markdown(for: session),
+                subject: Text(session.displayTitle)
+            ) {
                 HStack(spacing: 6) {
-                    if summaryController.isGenerating {
-                        ProgressView()
-                            .controlSize(.small)
-                    } else {
-                        Image(systemName: "sparkles")
-                    }
-                    Text(hasSummary ? "Regenerate Summary" : "Generate Summary")
+                    Image(systemName: "link")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text("Share")
                 }
-                .font(.appCaption.weight(.medium))
+                .padding(.leading, 12)
+                .padding(.trailing, 10)
+                .frame(height: 30)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .foregroundStyle(AppTheme.accent)
-            .disabled(!summaryController.canGenerate)
-            .opacity(summaryController.canGenerate ? 1 : 0.5)
+            .help("Share this meeting as Markdown")
+
+            Rectangle()
+                .fill(AppTheme.border)
+                .frame(width: 1, height: 30)
+
+            Menu {
+                Button("Copy Summary") {
+                    MeetingMarkdownExporter.copyToPasteboard(MeetingMarkdownExporter.summaryMarkdown(for: session))
+                }
+                .disabled(session.summary == nil)
+                Button("Copy Transcript") {
+                    MeetingMarkdownExporter.copyToPasteboard(MeetingMarkdownExporter.transcriptText(for: session))
+                }
+                .disabled(session.segments.isEmpty)
+                if let onExport {
+                    Button("Export as Markdown…", action: onExport)
+                }
+                if onArchive != nil || onUnarchive != nil || onDelete != nil {
+                    Divider()
+                }
+                if let onUnarchive {
+                    Button("Unarchive", action: onUnarchive)
+                }
+                if let onArchive {
+                    Button("Archive", action: onArchive)
+                }
+                if let onDelete {
+                    Button("Delete", role: .destructive, action: onDelete)
+                }
+            } label: {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 10, weight: .semibold))
+                    .frame(width: 30, height: 30)
+                    .contentShape(Rectangle())
+            }
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .accessibilityLabel("More meeting actions")
+        }
+        .font(.system(size: 13, weight: .medium))
+        .foregroundStyle(AppTheme.textPrimary)
+        .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(AppTheme.bgSidebar))
+        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).stroke(AppTheme.border, lineWidth: 1))
+        .fixedSize()
+    }
+}
+
+private enum DetailTab: CaseIterable, Hashable {
+    case summary, transcript, askAI
+
+    var title: String {
+        switch self {
+        case .summary: "Summary"
+        case .transcript: "Transcript"
+        case .askAI: "Ask AI"
         }
     }
 }
 
-private struct SessionKeyPointsSection: View {
-    let points: [String]
-    var highlightQuery: String = ""
+private struct SummarySectionHeading: View {
+    let title: String
 
     var body: some View {
-        if !points.isEmpty {
-            DetailSectionBlock(title: "Key Points") {
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(points, id: \.self) { point in
-                        HStack(alignment: .top, spacing: 8) {
-                            Text("•")
-                                .foregroundStyle(AppTheme.accent)
-                            HighlightedText(text: point, query: highlightQuery)
-                        }
+        Text(title)
+            .font(.system(size: 20, weight: .semibold))
+            .foregroundStyle(AppTheme.textPrimary)
+            .padding(.top, 32)
+            .padding(.bottom, 12)
+    }
+}
+
+private struct EmptySummaryCard: View {
+    let controller: MeetingSummaryController?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("No summary yet")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(AppTheme.textPrimary)
+            Text("Generate one from the meeting transcript.")
+                .font(.system(size: 13))
+                .foregroundStyle(AppTheme.textSecondary)
+            if let controller {
+                if let errorMessage = controller.errorMessage {
+                    Text(errorMessage)
+                        .font(.system(size: 12))
+                        .foregroundStyle(AppTheme.danger)
+                }
+                GenerateButton(
+                    title: "Generate Summary",
+                    isGenerating: controller.isGenerating,
+                    isProminent: true,
+                    isEnabled: controller.canGenerate
+                ) {
+                    Task { await controller.generate() }
+                }
+            }
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(AppTheme.bgSidebar))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(AppTheme.border, lineWidth: 1))
+    }
+}
+
+private struct SummaryFooter: View {
+    let generatedAt: Date
+    let controller: MeetingSummaryController?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let errorMessage = controller?.errorMessage {
+                Text(errorMessage)
+                    .font(.system(size: 12))
+                    .foregroundStyle(AppTheme.danger)
+            }
+            HStack(spacing: 10) {
+                Text("Summary generated \(generatedAt.formatted(.relative(presentation: .named)))")
+                    .font(.system(size: 12))
+                    .foregroundStyle(AppTheme.textSecondary)
+                if let controller {
+                    GenerateButton(
+                        title: "Regenerate",
+                        isGenerating: controller.isGenerating,
+                        isEnabled: controller.canGenerate
+                    ) {
+                        Task { await controller.generate() }
                     }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(.bottom, 24)
         }
+    }
+}
+
+private struct GenerateButton: View {
+    let title: String
+    let isGenerating: Bool
+    var isProminent = false
+    let isEnabled: Bool
+    let action: () -> Void
+
+    var body: some View {
+        DetailPillButton(
+            title: isGenerating ? "Generating…" : title,
+            systemImage: "sparkles",
+            isProminent: isProminent,
+            action: action
+        )
+        .disabled(!isEnabled || isGenerating)
+        .opacity(isEnabled || isGenerating ? 1 : 0.5)
     }
 }
 
@@ -468,139 +707,57 @@ private struct SessionActionItemsSection: View {
     var isSearching: Bool = false
 
     var body: some View {
-        DetailSectionBlock(title: "Action Items") {
-            VStack(alignment: .leading, spacing: 10) {
-                if items.isEmpty {
-                    Text("No action items yet. Generate them from the meeting summary and transcript.")
-                        .font(.appCaption)
-                        .foregroundStyle(AppTheme.textSecondary)
-                } else {
-                    VStack(alignment: .leading, spacing: 6) {
-                        ForEach(items, id: \.persistentModelID) { item in
-                            ActionItemRow(item: item, highlightQuery: highlightQuery) {
-                                controller?.toggleCompletion(for: item)
-                            }
+        SummarySectionHeading(title: "Action Items")
+        VStack(alignment: .leading, spacing: 12) {
+            if items.isEmpty {
+                Text("No action items yet.")
+                    .font(.system(size: 14))
+                    .foregroundStyle(AppTheme.textSecondary)
+            } else {
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(items, id: \.persistentModelID) { item in
+                        ActionItemRow(item: item, highlightQuery: highlightQuery) {
+                            controller?.toggleCompletion(for: item)
                         }
                     }
-                }
-
-                if !isSearching, let controller {
-                    if let errorMessage = controller.errorMessage {
-                        Text(errorMessage)
-                            .font(.appCaption)
-                            .foregroundStyle(AppTheme.danger)
-                    }
-
-                    Button {
-                        Task { await controller.generate() }
-                    } label: {
-                        HStack(spacing: 6) {
-                            if controller.isGenerating {
-                                ProgressView()
-                                    .controlSize(.small)
-                            } else {
-                                Image(systemName: "sparkles")
-                            }
-                            Text(items.isEmpty ? "Generate Action Items" : "Regenerate Action Items")
-                        }
-                        .font(.appCaption.weight(.medium))
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(AppTheme.accent)
-                    .disabled(!controller.canGenerate)
-                    .opacity(controller.canGenerate ? 1 : 0.5)
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .padding(.bottom, 24)
-    }
-}
 
-private struct SessionAskAISection: View {
-    let qaController: MeetingQAController?
-    var highlightQuery: String = ""
-    var matchingMessages: [ChatMessage] = []
-    var isSearching: Bool = false
-
-    var body: some View {
-        if !isSearching || !matchingMessages.isEmpty {
-            DetailSectionBlock(title: "Ask AI") {
-                VStack(alignment: .leading, spacing: 12) {
-                    if let qaController {
-                        if !isSearching {
-                            if !qaController.isAvailable {
-                                Text(qaController.availabilityMessage ?? "Configure AI in Settings to ask questions about this meeting.")
-                                    .font(.appCaption)
-                                    .foregroundStyle(AppTheme.textSecondary)
-                            } else if !qaController.hasContent {
-                                Text("This meeting has no transcript or summary to ask about yet.")
-                                    .font(.appCaption)
-                                    .foregroundStyle(AppTheme.textSecondary)
-                            } else if qaController.messages.isEmpty {
-                                Text("Ask a question about this meeting's transcript or summary.")
-                                    .font(.appCaption)
-                                    .foregroundStyle(AppTheme.textSecondary)
-                            }
-                        }
-
-                        if !matchingMessages.isEmpty || (!isSearching && qaController.isAwaitingAnswer) {
-                            ChatMessageListView(
-                                messages: matchingMessages,
-                                isAwaitingAnswer: isSearching ? false : qaController.isAwaitingAnswer,
-                                style: .home,
-                                scrollable: false,
-                                highlightQuery: highlightQuery
-                            )
-                        }
-                    }
+            if !isSearching, let controller {
+                if let errorMessage = controller.errorMessage {
+                    Text(errorMessage)
+                        .font(.system(size: 12))
+                        .foregroundStyle(AppTheme.danger)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                GenerateButton(
+                    title: items.isEmpty ? "Generate Action Items" : "Regenerate Action Items",
+                    isGenerating: controller.isGenerating,
+                    isEnabled: controller.canGenerate
+                ) {
+                    Task { await controller.generate() }
+                }
             }
-            .padding(.bottom, 24)
         }
-    }
-}
-
-private struct DetailSectionBlock<Content: View>: View {
-    let title: String
-    @ViewBuilder var content: Content
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            AppSectionHeader(title: title)
-            content
-        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
 private struct TranscriptRowModel: Identifiable, Equatable {
     let id: PersistentIdentifier
-    let timestampText: String
+    let elapsedText: String
+    let clockText: String
     let speaker: Speaker
     let text: String
-    let showDivider: Bool
     let highlightQuery: String
 
     func highlighted(with query: String) -> TranscriptRowModel {
         TranscriptRowModel(
             id: id,
-            timestampText: timestampText,
+            elapsedText: elapsedText,
+            clockText: clockText,
             speaker: speaker,
             text: text,
-            showDivider: showDivider,
             highlightQuery: query
-        )
-    }
-
-    func withDivider(_ showDivider: Bool) -> TranscriptRowModel {
-        TranscriptRowModel(
-            id: id,
-            timestampText: timestampText,
-            speaker: speaker,
-            text: text,
-            showDivider: showDivider,
-            highlightQuery: highlightQuery
         )
     }
 }
@@ -609,29 +766,23 @@ private struct TranscriptRowView: View, Equatable {
     let row: TranscriptRowModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .top, spacing: 12) {
-                Text(row.timestampText)
-                    .font(.system(size: 11, design: .monospaced))
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 7) {
+                Text(row.speaker.label)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(AppTheme.accent)
+                Text(row.elapsedText)
+                    .font(.system(size: 12))
+                    .monospacedDigit()
                     .foregroundStyle(AppTheme.textSecondary)
-                    .frame(width: 96, alignment: .leading)
-                    .fixedSize(horizontal: true, vertical: false)
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(row.speaker.label)
-                        .font(.appCaption.weight(.semibold))
-                        .foregroundStyle(row.speaker == .me ? AppTheme.accent : AppTheme.textSecondary)
-                    HighlightedText(text: row.text, query: row.highlightQuery)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                    .help(row.clockText)
             }
-            .padding(.vertical, 4)
-
-            if row.showDivider {
-                AppDivider(axis: .horizontal)
-                    .padding(.vertical, 8)
-            }
+            HighlightedText(text: row.text, query: row.highlightQuery, font: .system(size: 15))
+                .lineSpacing(3)
+                .fixedSize(horizontal: false, vertical: true)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 9)
     }
 }
 
@@ -657,6 +808,7 @@ private struct ActionItemRow: View {
             HighlightedText(
                 text: item.text,
                 query: highlightQuery,
+                font: .system(size: 15),
                 foreground: item.isCompleted ? AppTheme.textSecondary : AppTheme.textPrimary
             )
             .strikethrough(item.isCompleted, color: AppTheme.textSecondary)
@@ -683,9 +835,11 @@ private struct ActionItemRow: View {
     )
     return SessionDetailView(
         session: session,
+        onContinue: {},
         onArchive: {},
+        onExport: {},
         onDelete: {}
     )
-    .frame(width: 700, height: 600)
+    .frame(width: 900, height: 700)
     .preferredColorScheme(.dark)
 }

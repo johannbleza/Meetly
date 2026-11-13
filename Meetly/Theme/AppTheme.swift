@@ -1,26 +1,71 @@
 import SwiftUI
 
 enum AppTheme {
-    static let activityBarWidth: CGFloat = 48
-    static let sidebarWidth: CGFloat = 260
-    static let sidebarMinWidth: CGFloat = 220
-    static let sidebarMaxWidth: CGFloat = 520
-    static let rowHeight: CGFloat = 44
+    /// Widest the centered page column gets (meeting lists and meeting details).
+    static let pageMaxWidth: CGFloat = 1040
 
-    static let bgPrimary = Color(red: 0.118, green: 0.118, blue: 0.118)
-    static let bgSidebar = Color(red: 0.145, green: 0.145, blue: 0.149)
-    static let bgActivityBar = Color(red: 0.094, green: 0.094, blue: 0.094)
-    static let bgHover = Color(red: 0.165, green: 0.176, blue: 0.180)
-    static let bgSelected = Color(red: 0.035, green: 0.278, blue: 0.443)
-    static let bgInput = Color(red: 0.196, green: 0.196, blue: 0.196)
+    /// The main window's appearance setting. The overlay and notch are always dark.
+    enum Mode: String, CaseIterable, Identifiable {
+        case system, light, dark
 
-    static let border = Color(red: 0.235, green: 0.235, blue: 0.235)
-    static let textPrimary = Color(red: 0.800, green: 0.800, blue: 0.800)
-    static let textSecondary = Color(red: 0.522, green: 0.522, blue: 0.522)
-    static let accent = Color(red: 0.216, green: 0.580, blue: 1.000)
-    static let danger = Color(red: 0.949, green: 0.388, blue: 0.388)
-    static let success = Color(red: 0.400, green: 0.851, blue: 0.502)
-    static let warning = Color(red: 0.984, green: 0.749, blue: 0.376)
+        var id: String { rawValue }
+
+        var label: String {
+            switch self {
+            case .system: "System"
+            case .light: "Light"
+            case .dark: "Dark"
+            }
+        }
+
+        /// Nil follows the system appearance.
+        var colorScheme: ColorScheme? {
+            switch self {
+            case .system: nil
+            case .light: .light
+            case .dark: .dark
+            }
+        }
+    }
+
+    // Page and surfaces
+    static let bgPrimary = adaptive(light: 0xFAFAFA, dark: (0.118, 0.118, 0.118))
+    /// Cards, pills, popovers and the settings card.
+    static let bgSidebar = adaptive(light: 0xFFFFFF, dark: (0.145, 0.145, 0.149))
+    /// The greeting band at the top of the home page.
+    static let bgBand = adaptive(light: 0xF3F3F3, dark: (0.145, 0.145, 0.149))
+    static let bgHover = adaptive(light: 0xF0F0F0, dark: (0.165, 0.176, 0.180))
+    /// Search fields, chips and segmented-control tracks.
+    static let bgInput = adaptive(light: 0xEDEDED, dark: (0.196, 0.196, 0.196))
+    /// The selected segment of a segmented control.
+    static let bgSegment = adaptive(light: 0xFFFFFF, dark: (0.255, 0.255, 0.259))
+
+    static let border = adaptive(light: 0xE5E5E5, dark: (0.235, 0.235, 0.235))
+    static let textPrimary = adaptive(light: 0x161616, dark: (0.800, 0.800, 0.800))
+    static let textSecondary = adaptive(light: 0x737373, dark: (0.522, 0.522, 0.522))
+
+    static let accent = adaptive(light: 0x2F9BF0, dark: (0.216, 0.580, 1.000))
+    /// Tinted fill behind accent text (Start Meeting, questions chip).
+    static let accentSoft = adaptive(light: 0xE2F0FC, dark: (0.110, 0.220, 0.330))
+    static let danger = adaptive(light: 0xE5484D, dark: (0.949, 0.388, 0.388))
+    static let success = adaptive(light: 0x2EA44F, dark: (0.400, 0.851, 0.502))
+    static let warning = adaptive(light: 0xD98E04, dark: (0.984, 0.749, 0.376))
+    /// Search-match highlight; stays yellow in both appearances.
+    static let highlight = Color(red: 0.984, green: 0.749, blue: 0.376)
+
+    /// A color that resolves per appearance, so views follow the window's light or dark mode.
+    private static func adaptive(light hex: UInt32, dark: (Double, Double, Double)) -> Color {
+        let lightColor = NSColor(
+            srgbRed: CGFloat((hex >> 16) & 0xFF) / 255,
+            green: CGFloat((hex >> 8) & 0xFF) / 255,
+            blue: CGFloat(hex & 0xFF) / 255,
+            alpha: 1
+        )
+        let darkColor = NSColor(srgbRed: dark.0, green: dark.1, blue: dark.2, alpha: 1)
+        return Color(nsColor: NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? darkColor : lightColor
+        })
+    }
 }
 
 extension Font {
@@ -54,37 +99,6 @@ struct AppDivider: View {
                     .frame(height: 1)
             }
         }
-    }
-}
-
-struct AppListRowStyle: ViewModifier {
-    let isSelected: Bool
-    let isHovered: Bool
-
-    func body(content: Content) -> some View {
-        content
-            .padding(.horizontal, 12)
-            .frame(height: AppTheme.rowHeight)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(backgroundColor)
-            .overlay(alignment: .leading) {
-                if isSelected {
-                    Rectangle()
-                        .fill(AppTheme.accent)
-                        .frame(width: 2)
-                }
-            }
-            .contentShape(Rectangle())
-    }
-
-    private var backgroundColor: Color {
-        if isSelected {
-            return AppTheme.bgSelected.opacity(0.55)
-        }
-        if isHovered {
-            return AppTheme.bgHover
-        }
-        return .clear
     }
 }
 
@@ -176,9 +190,5 @@ struct AppSearchField: View {
 extension View {
     func appPanelBackground(_ color: Color = AppTheme.bgPrimary) -> some View {
         modifier(AppPanelBackground(color: color))
-    }
-
-    func appListRow(selected: Bool, hovered: Bool) -> some View {
-        modifier(AppListRowStyle(isSelected: selected, isHovered: hovered))
     }
 }

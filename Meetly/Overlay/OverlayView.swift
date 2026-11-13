@@ -11,9 +11,13 @@ private struct OverlayContentHeightKey: PreferenceKey {
 
 struct OverlayView: View {
     @Bindable var sessionManager: SessionManager
+    /// Set by `OverlayPanelController` for the tear-off and dock animations.
+    @Environment(OverlayMotion.self) private var motion: OverlayMotion?
     @State private var questionText = ""
     @State private var pendingImages: [ChatImageAttachment] = []
     @State private var isShowingSettings = false
+    /// The question field stays folded into the "Ask" chip until clicked, like the notch.
+    @State private var isComposing = false
     @State private var isFollowingLive = true
     @State private var scrollDistanceFromBottom: CGFloat = 0
     @State private var measuredAnswerHeight: CGFloat = 0
@@ -26,8 +30,6 @@ struct OverlayView: View {
     private static let liveSubtitleID = "live-subtitle"
     private static let activeAnswerID = "active-answer"
     private static let scrollBottomThreshold: CGFloat = 20
-    private static let defaultScreenQuestion =
-        "This is a screenshot of my screen right now. Explain what it shows and point out anything useful for this meeting."
 
     private var hasQuestionContext: Bool {
         !sessionManager.overlayQAMessages.isEmpty
@@ -68,86 +70,24 @@ struct OverlayView: View {
         }
     }
 
+    /// Same prompt as the notch's idle state, on the floating panel. The whole panel drags it.
     private var idleOverlay: some View {
-        VStack(spacing: 0) {
-            idleToolbar
-            Divider().opacity(0.25)
-            idleContent
-        }
-        .frame(width: OverlayGlassStyle.panelWidth)
-        .fixedSize(horizontal: false, vertical: true)
-        .overlayGlassPanel()
-        .shadow(color: .black.opacity(0.12), radius: 16, y: 6)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        OverlayIdlePrompt(sessionManager: sessionManager)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
+            .background {
+                OverlayWindowDragRegion()
+            }
+            .frame(width: OverlayGlassStyle.panelWidth)
+            .fixedSize(horizontal: false, vertical: true)
+            .overlayGlassPanel(cornerRadius: Self.idleCornerRadius)
+            .overlayMotionChrome(motion, cornerRadius: Self.idleCornerRadius)
+            .shadow(color: .black.opacity(0.12), radius: 16, y: 6)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
-    private var idleToolbar: some View {
-        HStack(spacing: 10) {
-            OverlayToolbarIconButton(systemImage: "eye.slash", help: "Hide overlay") {
-                sessionManager.hideOverlay()
-            }
-
-            Spacer(minLength: 0)
-
-            Text("Meetly")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-
-            Spacer(minLength: 0)
-
-            OverlaySettingsButton(sessionManager: sessionManager, isShowingSettings: $isShowingSettings)
-        }
-        .padding(.horizontal, 12)
-        .padding(.top, 10)
-        .padding(.bottom, 8)
-        .background {
-            OverlayWindowDragRegion()
-        }
-    }
-
-    private var idleContent: some View {
-        VStack(spacing: 14) {
-            VStack(spacing: 4) {
-                Text(sessionManager.detectedMeetingPrompt?.promptTitle ?? "Ready to record")
-                    .font(.headline)
-                    .multilineTextAlignment(.center)
-                Text(sessionManager.detectedMeetingPrompt == nil
-                    ? "Start when you're in your meeting."
-                    : "Record and transcribe this call?")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-            }
-
-            if let errorMessage = sessionManager.errorMessage {
-                Text(errorMessage)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .multilineTextAlignment(.center)
-            }
-
-            Button {
-                Task { await sessionManager.startMeeting() }
-            } label: {
-                Label("Start Recording", systemImage: "mic.fill")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-
-            if sessionManager.detectedMeetingPrompt != nil {
-                Button("Not now") {
-                    sessionManager.dismissDetectedMeeting()
-                }
-                .buttonStyle(.borderless)
-                .foregroundStyle(.secondary)
-            }
-        }
-        .padding(.horizontal, 20)
-        .padding(.top, 14)
-        .padding(.bottom, 18)
-        .frame(maxWidth: .infinity, alignment: .top)
-    }
+    /// Rounder than the meeting panel, like the bottom of the notch it came out of.
+    private static let idleCornerRadius: CGFloat = 20
 
     private var meetingOverlay: some View {
         VStack(spacing: 0) {
@@ -176,15 +116,24 @@ struct OverlayView: View {
                 }
                 contentArea
                 Divider().opacity(0.15)
-                actionRow
-                OverlayInputBar(
-                    text: $questionText,
-                    pendingImages: $pendingImages,
-                    isDisabled: sessionManager.isAwaitingAnswer || !sessionManager.isMeetingActive
-                ) { question, images in
-                    Task { await sessionManager.askQuestion(question, images: images) }
+                if isComposing {
+                    OverlayInputBar(
+                        text: $questionText,
+                        pendingImages: $pendingImages,
+                        isDisabled: sessionManager.isAwaitingAnswer || !sessionManager.isMeetingActive,
+                        onCancel: cancelComposing,
+                        focusOnAppear: true
+                    ) { question, images in
+                        withAnimation(OverlayGlassStyle.resizeAnimation) { isComposing = false }
+                        Task { await sessionManager.askQuestion(question, images: images) }
+                    }
+                    .padding(.top, 2)
+                    .layoutPriority(1)
+                    .transition(.opacity)
+                } else {
+                    actionRow
+                        .transition(.opacity)
                 }
-                .layoutPriority(1)
 
                 if !isFolded {
                     OverlayResizeHandle(
@@ -207,6 +156,7 @@ struct OverlayView: View {
         .frame(width: OverlayGlassStyle.panelWidth, alignment: .top)
         .fixedSize(horizontal: false, vertical: true)
         .overlayGlassPanel()
+        .overlayMotionChrome(motion)
         .shadow(color: .black.opacity(0.12), radius: 16, y: 6)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .onAppear {
@@ -216,6 +166,7 @@ struct OverlayView: View {
                 guard !attachments.isEmpty else { return }
                 withAnimation(OverlayGlassStyle.resizeAnimation) {
                     pendingImages.append(contentsOf: attachments)
+                    isComposing = true
                 }
             }
         }
@@ -230,6 +181,7 @@ struct OverlayView: View {
             )
         }
         .animation(OverlayGlassStyle.resizeAnimation, value: isFolded)
+        .animation(OverlayGlassStyle.resizeAnimation, value: isComposing)
         .animation(OverlayGlassStyle.resizeAnimation, value: hasQuestionContext)
         .animation(OverlayGlassStyle.resizeAnimation, value: scrollAreaHeight)
         .animation(OverlayGlassStyle.resizeAnimation, value: pendingImages.map(\.id))
@@ -544,26 +496,33 @@ struct OverlayView: View {
         proxy.scrollTo(Self.liveSubtitleID, anchor: .bottom)
     }
 
+    /// Same chips, in the same order, as the notch's quick actions.
     private var actionRow: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                actionButton("Ask about screen", icon: "camera.viewfinder", action: askAboutScreen)
-                    .disabled(sessionManager.state != .recording || sessionManager.isCapturingScreen)
-                    .help("Screenshot your shared display and ask AI about it")
-                actionButton("What to say", icon: "text.quote") {
-                    Task { await sessionManager.askQuestion("What should I say next based on this conversation?") }
-                }
-                actionButton("Follow-ups", icon: "bubble.left") {
-                    Task { await sessionManager.askQuestion("Suggest 2-3 good follow-up questions I could ask.") }
-                }
-                actionButton("Recap", icon: "arrow.clockwise") {
-                    Task { await sessionManager.askQuestion("Give me a brief recap of what's been discussed so far.") }
-                }
+        HStack(spacing: 6) {
+            actionButton("Ask", icon: "sparkles") {
+                questionText = ""
+                withAnimation(OverlayGlassStyle.resizeAnimation) { isComposing = true }
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 10)
+            actionButton("What to say", icon: "text.quote") {
+                Task { await sessionManager.askQuestion(OverlayQuickPrompt.whatToSay) }
+            }
+            actionButton("Recap", icon: "arrow.clockwise") {
+                Task { await sessionManager.askQuestion(OverlayQuickPrompt.recap) }
+            }
+            actionButton("Screen", icon: "camera.viewfinder", action: askAboutScreen)
+                .disabled(sessionManager.state != .recording || sessionManager.isCapturingScreen)
+                .help("Screenshot your shared display and ask AI about it")
+            Spacer(minLength: 0)
         }
-        .padding(.top, 4)
+        .padding(.horizontal, 12)
+        .padding(.top, 10)
+        .padding(.bottom, 12)
+    }
+
+    private func cancelComposing() {
+        questionText = ""
+        pendingImages = []
+        withAnimation(OverlayGlassStyle.resizeAnimation) { isComposing = false }
     }
 
     /// Sends right away, using anything already typed or pasted in the input bar.
@@ -571,7 +530,7 @@ struct OverlayView: View {
         Task {
             guard let screenshot = await sessionManager.captureScreenForQuestion() else { return }
             let typed = questionText.trimmingCharacters(in: .whitespacesAndNewlines)
-            let question = typed.isEmpty ? Self.defaultScreenQuestion : typed
+            let question = typed.isEmpty ? OverlayQuickPrompt.screen : typed
             let images = pendingImages + [screenshot]
             questionText = ""
             pendingImages = []
@@ -582,10 +541,13 @@ struct OverlayView: View {
     private func actionButton(_ title: String, icon: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Label(title, systemImage: icon)
-                .font(.caption)
+                .font(.system(size: 11.5, weight: .medium))
+                .padding(.horizontal, 9)
+                .padding(.vertical, 5)
+                .background(.quaternary.opacity(0.6), in: Capsule())
+                .contentShape(Capsule())
         }
-        .controlSize(.small)
-        .buttonStyle(.borderless)
+        .buttonStyle(NotchPressStyle())
         .disabled(sessionManager.isAwaitingAnswer || !sessionManager.isMeetingActive)
     }
 }

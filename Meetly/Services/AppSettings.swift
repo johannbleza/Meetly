@@ -66,6 +66,14 @@ enum AppSettings {
         set { defaults.set(newValue, forKey: "overlayOpacity") }
     }
 
+    /// Main window appearance. Follows the system by default; the overlay and notch are always dark.
+    static var appTheme: AppTheme.Mode {
+        get { AppTheme.Mode(rawValue: defaults.string(forKey: appThemeKey) ?? "") ?? .system }
+        set { defaults.set(newValue.rawValue, forKey: appThemeKey) }
+    }
+
+    static let appThemeKey = "appTheme"
+
     static var hideFromScreenShare: Bool {
         get {
             if defaults.object(forKey: "hideFromScreenShare") == nil { return true }

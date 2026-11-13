@@ -7,6 +7,9 @@ struct PasteAwareOverlayTextField: NSViewRepresentable {
     var onImagePaste: ([ChatImageAttachment]) -> Void
     var onSubmit: () -> Void
     var onFocus: () -> Void
+    var onCancel: (() -> Void)? = nil
+    /// Takes keyboard focus as soon as it appears (the composer opens from a click on "Ask").
+    var focusOnAppear = false
 
     func makeNSView(context: Context) -> PasteImageNSTextField {
         let field = PasteImageNSTextField()
@@ -20,6 +23,12 @@ struct PasteAwareOverlayTextField: NSViewRepresentable {
         field.cell?.truncatesLastVisibleLine = true
         field.delegate = context.coordinator
         field.onImagePaste = onImagePaste
+        if focusOnAppear {
+            DispatchQueue.main.async { [onFocus] in
+                onFocus()
+                field.window?.makeFirstResponder(field)
+            }
+        }
         return field
     }
 
@@ -32,6 +41,7 @@ struct PasteAwareOverlayTextField: NSViewRepresentable {
         context.coordinator.onImagePaste = onImagePaste
         context.coordinator.onSubmit = onSubmit
         context.coordinator.onFocus = onFocus
+        context.coordinator.onCancel = onCancel
         context.coordinator.onTextChange = { text = $0 }
     }
 
@@ -49,6 +59,7 @@ struct PasteAwareOverlayTextField: NSViewRepresentable {
         var onImagePaste: ([ChatImageAttachment]) -> Void
         var onSubmit: () -> Void
         var onFocus: () -> Void
+        var onCancel: (() -> Void)?
 
         private let pasteSelector = Selector("paste:")
 
@@ -74,6 +85,11 @@ struct PasteAwareOverlayTextField: NSViewRepresentable {
                 let attachments = ClipboardImageReader.readImages()
                 guard !attachments.isEmpty else { return false }
                 onImagePaste(attachments)
+                return true
+            }
+
+            if commandSelector == #selector(NSResponder.cancelOperation(_:)), let onCancel {
+                onCancel()
                 return true
             }
 

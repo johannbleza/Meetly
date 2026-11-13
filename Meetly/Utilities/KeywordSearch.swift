@@ -48,7 +48,7 @@ enum KeywordHighlighter {
                 range: searchStart..<text.endIndex
               ) {
             if let attributedRange = Range(range, in: attributed) {
-                attributed[attributedRange].backgroundColor = AppTheme.warning.opacity(0.88)
+                attributed[attributedRange].backgroundColor = AppTheme.highlight.opacity(0.88)
                 attributed[attributedRange].foregroundColor = Color.black
                 attributed[attributedRange].inlinePresentationIntent = .stronglyEmphasized
             }
