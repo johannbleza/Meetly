@@ -697,7 +697,7 @@ private struct GenerateButton: View {
     var body: some View {
         DetailPillButton(
             title: isGenerating ? (isHovered ? "Stop Generating" : "Generating…") : title,
-            systemImage: isGenerating && isHovered ? "stop.fill" : "sparkles",
+            systemImage: isGenerating && isHovered ? "stop.fill" : "text.append",
             isProminent: isProminent,
             action: isGenerating ? onStop : action
         )
@@ -778,8 +778,8 @@ private struct TranscriptRowView: View, Equatable {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 7) {
                 Text(row.speaker.label)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(AppTheme.accent)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(AppTheme.textPrimary)
                 Text(row.elapsedText)
                     .font(.system(size: 12))
                     .monospacedDigit()

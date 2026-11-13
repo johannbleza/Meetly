@@ -87,7 +87,7 @@ struct MeetingsHomeView: View {
                 StatusBanner(
                     message: sessionManager.aiAvailabilityMessage
                         ?? "Configure \(sessionManager.aiProvider.label) in Settings for AI answers and summaries.",
-                    systemImage: "sparkles",
+                    systemImage: "exclamationmark.circle",
                     color: AppTheme.textSecondary
                 )
                 .offset(y: greetingPush)

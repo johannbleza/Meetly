@@ -113,7 +113,7 @@ private struct FlowingSuggestions: View {
 
     private var chips: some View {
         ForEach(suggestions, id: \.self) { suggestion in
-            DetailPillButton(title: suggestion, systemImage: "sparkles") {
+            DetailPillButton(title: suggestion) {
                 onSelect(suggestion)
             }
         }
@@ -175,7 +175,7 @@ struct MeetingAskBar: View {
             .frame(height: 40)
             .background(Capsule().fill(AppTheme.bgSidebar))
             .overlay(
-                Capsule().stroke(isFocused ? AppTheme.accent.opacity(0.7) : AppTheme.border, lineWidth: 1)
+                Capsule().stroke(isFocused ? AppTheme.focusRing : AppTheme.border, lineWidth: 1)
             )
             .contentShape(Capsule())
             .onTapGesture { isFocused = true }
@@ -243,7 +243,7 @@ struct DetailPillLabel: View {
             }
         }
         .font(.system(size: 12, weight: .medium))
-        .foregroundStyle(isProminent ? Color.white : AppTheme.textPrimary)
+        .foregroundStyle(isProminent ? AppTheme.onInk : AppTheme.textPrimary)
         .padding(.horizontal, 12)
         .frame(height: 28)
         .background(
@@ -259,7 +259,7 @@ struct DetailPillLabel: View {
     }
 
     private var fill: Color {
-        if isProminent { return AppTheme.accent }
+        if isProminent { return AppTheme.ink.opacity(isHovered ? 0.82 : 1) }
         if isSubtle { return isHovered ? AppTheme.bgHover : AppTheme.bgInput }
         return isHovered ? AppTheme.bgHover : AppTheme.bgSidebar
     }

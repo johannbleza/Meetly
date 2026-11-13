@@ -44,9 +44,18 @@ enum AppTheme {
     static let textPrimary = adaptive(light: 0x161616, dark: (0.800, 0.800, 0.800))
     static let textSecondary = adaptive(light: 0x737373, dark: (0.522, 0.522, 0.522))
 
+    /// Blue, kept for content rather than controls: the calendar, Ask AI chats and the
+    /// meeting chips (questions, matches).
     static let accent = adaptive(light: 0x2F9BF0, dark: (0.216, 0.580, 1.000))
-    /// Tinted fill behind accent text (Start Meeting, questions chip).
+    /// Tinted fill behind accent text (meeting chips, calendar hover).
     static let accentSoft = adaptive(light: 0xE2F0FC, dark: (0.110, 0.220, 0.330))
+    /// The brand's near-black (`design/brand/meets-symbol.svg`), inverted in dark mode. Used for
+    /// controls: primary buttons and focus outlines.
+    static let ink = adaptive(light: 0x111113, dark: (0.925, 0.925, 0.925))
+    /// The outline of a focused field.
+    static let focusRing = ink.opacity(0.4)
+    /// Text and icons on `ink`.
+    static let onInk = adaptive(light: 0xFFFFFF, dark: (0.067, 0.067, 0.075))
     static let danger = adaptive(light: 0xE5484D, dark: (0.949, 0.388, 0.388))
     static let success = adaptive(light: 0x2EA44F, dark: (0.400, 0.851, 0.502))
     static let warning = adaptive(light: 0xD98E04, dark: (0.984, 0.749, 0.376))
@@ -168,7 +177,7 @@ struct AppSearchField: View {
     }
 
     private var borderColor: Color {
-        isFocused?.wrappedValue == true ? AppTheme.accent : AppTheme.border
+        isFocused?.wrappedValue == true ? AppTheme.focusRing : AppTheme.border
     }
 
     @ViewBuilder

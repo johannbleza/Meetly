@@ -84,6 +84,10 @@ private struct ChatBubbleView: View {
     let style: ChatMessageListStyle
     var highlightQuery: String = ""
 
+    private var showsLabel: Bool {
+        message.sender == .me || message.sender == .other
+    }
+
     private var isRightAligned: Bool {
         message.sender == .me || message.sender == .user
     }
@@ -93,9 +97,13 @@ private struct ChatBubbleView: View {
             if isRightAligned { Spacer(minLength: 24) }
 
             VStack(alignment: isRightAligned ? .trailing : .leading, spacing: 4) {
-                Text(message.sender.label)
-                    .font(.appCaption.weight(.semibold))
-                    .foregroundStyle(labelColor)
+                // Questions and answers are told apart by side and color; only transcript
+                // lines (You / Speaker) need a name.
+                if showsLabel {
+                    Text(message.sender.label)
+                        .font(.appCaption.weight(.semibold))
+                        .foregroundStyle(labelColor)
+                }
 
                 HighlightedText(text: message.text, query: highlightQuery, foreground: textColor)
                     .multilineTextAlignment(isRightAligned ? .trailing : .leading)
@@ -118,16 +126,14 @@ private struct ChatBubbleView: View {
 
     private var labelColor: Color {
         switch (message.sender, style) {
-        case (.me, _), (.user, _):
+        case (.me, _):
             return style == .home ? AppTheme.accent : .blue
         case (.other, .home):
             return AppTheme.textSecondary
         case (.other, .overlay):
             return .secondary
-        case (.assistant, .home):
-            return AppTheme.accent.opacity(0.85)
-        case (.assistant, .overlay):
-            return .purple
+        case (.user, _), (.assistant, _):
+            return .clear
         }
     }
 

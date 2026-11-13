@@ -64,6 +64,8 @@ struct MeetlyApp: App {
         .modelContainer(sharedModelContainer)
         .defaultSize(width: 1100, height: 720)
         .commands {
+            // Meets has one main window: no File ▸ New Window (⌘N).
+            CommandGroup(replacing: .newItem) {}
             CommandGroup(replacing: .appSettings) {
                 SettingsMenuCommand()
             }

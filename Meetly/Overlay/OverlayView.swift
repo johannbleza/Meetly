@@ -501,7 +501,7 @@ struct OverlayView: View {
     /// Same chips, in the same order, as the notch's quick actions.
     private var actionRow: some View {
         HStack(spacing: 6) {
-            actionButton("Ask", icon: "sparkles") {
+            actionButton("Ask", icon: "text.bubble") {
                 questionText = ""
                 withAnimation(OverlayGlassStyle.resizeAnimation) { isComposing = true }
             }

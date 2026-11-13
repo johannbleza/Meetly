@@ -40,8 +40,12 @@ struct MeetingSearchView: View {
                 .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { _ in
                     guard !didReportLayout else { return }
                     didReportLayout = true
-                    // After this layout pass lands in AppKit, so the anchor has its frame.
-                    DispatchQueue.main.async(execute: onFieldLaidOut)
+                    // After this layout pass lands in AppKit, so the anchor has its frame
+                    // and the field is in the window and can take focus.
+                    DispatchQueue.main.async {
+                        isFieldFocused = true
+                        onFieldLaidOut()
+                    }
                 }
                 .padding(.bottom, 22)
 
@@ -54,7 +58,12 @@ struct MeetingSearchView: View {
         .padding(.top, 36)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .appPanelBackground(AppTheme.bgPrimary)
+        // Focus set while the view is still being inserted is dropped, so it's also set once
+        // the field is laid out (above) and again when the morph reveals it.
         .task { isFieldFocused = true }
+        .onChange(of: isRevealed) { _, revealed in
+            if revealed { isFieldFocused = true }
+        }
         .onAppear {
             let selection = selection
             keyMonitor.start(moveSelection: { selection.move(by: $0) }, escape: handleEscape)
@@ -154,7 +163,7 @@ struct MeetingSearchView: View {
         .frame(height: 56)
         .overlay(
             RoundedRectangle(cornerRadius: SearchMorphDriver.fieldCorner, style: .continuous)
-                .stroke(isFieldFocused ? AppTheme.accent.opacity(0.6) : AppTheme.border, lineWidth: 1)
+                .stroke(isFieldFocused ? AppTheme.focusRing : AppTheme.border, lineWidth: 1)
                 .opacity(isRevealed ? 1 : 0)
         )
         .background(

@@ -39,7 +39,7 @@ struct AppSegmentedControl<Value: Hashable>: View {
                             Text("\(badge)")
                                 .font(.system(size: 10, weight: .semibold))
                                 .monospacedDigit()
-                                .foregroundStyle(badge > 0 ? AppTheme.accent : AppTheme.textSecondary)
+                                .foregroundStyle(badge > 0 ? AppTheme.textPrimary : AppTheme.textSecondary)
                         }
                     }
                     .font(.system(size: 13, weight: .medium))

@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// The meeting control in the main window's title bar: Start Meeting when idle, or the
+/// The meeting control in the main window's title bar: Record when idle, or the
 /// recording status with Stop (and Resume while paused).
 struct ActiveMeetingControls: View {
     @Bindable var sessionManager: SessionManager
@@ -9,7 +9,7 @@ struct ActiveMeetingControls: View {
         HStack(spacing: 8) {
             switch sessionManager.state {
             case .idle:
-                TitleBarPill(title: "Start Meeting", systemImage: "mic.fill", style: .accent) {
+                TitleBarPill(title: "Record", logo: true, style: .ink) {
                     Task { await sessionManager.startMeeting() }
                 }
 
@@ -21,7 +21,7 @@ struct ActiveMeetingControls: View {
 
             case .paused:
                 status(label: "Paused", color: AppTheme.warning)
-                TitleBarPill(title: "Resume", systemImage: "play.fill", style: .accent) {
+                TitleBarPill(title: "Resume", systemImage: "play.fill", style: .ink) {
                     Task { await sessionManager.resumeMeeting() }
                 }
                 TitleBarPill(title: "Stop", systemImage: "stop.fill", style: .danger) {
@@ -92,10 +92,13 @@ private struct SummarizingPill: View {
 
 /// A rounded, tinted button sized for the title bar.
 struct TitleBarPill: View {
-    enum Style { case accent, danger }
+    /// `ink`: the solid brand button. `danger`: red text, filled only on hover.
+    enum Style { case ink, danger }
 
     let title: String
-    let systemImage: String
+    var systemImage: String?
+    /// Shows the Meets symbol instead of an SF Symbol.
+    var logo = false
     let style: Style
     let action: () -> Void
 
@@ -103,17 +106,27 @@ struct TitleBarPill: View {
 
     var body: some View {
         Button(action: action) {
-            Label(title, systemImage: systemImage)
-                .labelStyle(.titleAndIcon)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(foreground)
-                .padding(.horizontal, 12)
-                .frame(height: 28)
-                .background(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(background.opacity(isHovered ? 0.8 : 1))
-                )
-                .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            HStack(spacing: 6) {
+                if logo {
+                    Image(MeetsSymbol.assetName)
+                        .renderingMode(.template)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(width: 17, height: 10)
+                } else if let systemImage {
+                    Image(systemName: systemImage)
+                }
+                Text(title)
+            }
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(foreground)
+            .padding(.horizontal, 12)
+            .frame(height: 28)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(background)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
         .buttonStyle(.plain)
         .onHover { isHovered = $0 }
@@ -121,15 +134,15 @@ struct TitleBarPill: View {
 
     private var foreground: Color {
         switch style {
-        case .accent: AppTheme.accent
+        case .ink: AppTheme.onInk
         case .danger: AppTheme.danger
         }
     }
 
     private var background: Color {
         switch style {
-        case .accent: AppTheme.accentSoft
-        case .danger: AppTheme.danger.opacity(0.14)
+        case .ink: AppTheme.ink.opacity(isHovered ? 0.82 : 1)
+        case .danger: AppTheme.danger.opacity(isHovered ? 0.12 : 0)
         }
     }
 }

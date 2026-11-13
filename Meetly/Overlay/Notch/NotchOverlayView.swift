@@ -437,7 +437,7 @@ struct NotchOverlayView: View {
     /// Same height as the chip row, so opening the field doesn't move the notch.
     private var questionField: some View {
         HStack(spacing: 8) {
-            Image(systemName: "sparkles")
+            Image(systemName: "text.bubble")
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.white.opacity(0.6))
             TextField(
@@ -504,7 +504,7 @@ struct NotchOverlayView: View {
 
     private var quickActions: some View {
         HStack(spacing: 6) {
-            NotchChip(title: "Ask", systemImage: "sparkles", action: startQuestion)
+            NotchChip(title: "Ask", systemImage: "text.bubble", action: startQuestion)
             NotchChip(title: "What to say", systemImage: "text.quote") {
                 Task { await sessionManager.askQuestion(OverlayQuickPrompt.whatToSay) }
             }
@@ -538,7 +538,7 @@ struct NotchOverlayView: View {
 
             if sessionManager.isAwaitingAnswer {
                 HStack(spacing: 8) {
-                    Image(systemName: "sparkles")
+                    Image(systemName: "ellipsis.bubble")
                         .font(.system(size: 13, weight: .semibold))
                         .symbolEffect(.variableColor.iterative.reversing, options: .repeating)
                     Text("Thinking…")

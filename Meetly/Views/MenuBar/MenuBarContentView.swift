@@ -30,7 +30,11 @@ struct MenuBarContentView: View {
         Button {
             Task { await sessionManager.startMeeting() }
         } label: {
-            Label("Start Meeting", systemImage: "mic.fill")
+            Label {
+                Text("Record")
+            } icon: {
+                Image(nsImage: MeetsSymbol.menuBarImage())
+            }
         }
 
         Button {
@@ -138,7 +142,7 @@ struct MenuBarContentView: View {
         Divider()
 
         Menu("Quick Actions") {
-            quickActionButton("Assist", icon: "sparkles") {
+            quickActionButton("Assist", icon: "text.bubble") {
                 "How can I assist in this meeting right now?"
             }
             quickActionButton("What to say", icon: "text.quote") {
@@ -237,41 +241,29 @@ struct MenuBarContentView: View {
     }
 }
 
-enum MenuBarIcon {
-    static func systemImage(for state: MeetingState) -> String {
-        switch state {
-        case .idle:
-            "waveform.circle"
-        case .recording:
-            "record.circle.fill"
-        case .paused:
-            "pause.circle.fill"
-        case .summarizing:
-            "sparkles"
+/// The Meets symbol, from the `MeetsSymbol` asset (`design/brand/meets-symbol.svg`, cropped).
+enum MeetsSymbol {
+    static let assetName = "MeetsSymbol"
+
+    /// Sized for the menu bar, as a template image so macOS colors it like other menu bar icons.
+    @MainActor
+    static func menuBarImage() -> NSImage {
+        guard let source = NSImage(named: assetName) else { return NSImage() }
+        let image = NSImage(size: NSSize(width: 20, height: 11.25), flipped: false) { rect in
+            source.draw(in: rect)
+            return true
         }
+        image.isTemplate = true
+        image.accessibilityDescription = "Meets"
+        return image
     }
 }
 
+/// Always the plain symbol: the notch already shows when a meeting is recording or paused.
 struct MenuBarIconLabel: View {
     var sessionManager: SessionManager
 
     var body: some View {
-        Image(systemName: MenuBarIcon.systemImage(for: sessionManager.state))
-            .symbolRenderingMode(.monochrome)
-            .foregroundStyle(iconColor)
-            .symbolEffect(.pulse, options: .repeating, isActive: sessionManager.state == .recording)
-    }
-
-    private var iconColor: Color {
-        switch sessionManager.state {
-        case .recording:
-            .red
-        case .paused:
-            .yellow
-        case .summarizing:
-            .secondary
-        default:
-            .primary
-        }
+        Image(nsImage: MeetsSymbol.menuBarImage())
     }
 }

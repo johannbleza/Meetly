@@ -228,11 +228,12 @@ struct NotchCapsuleButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 12.5, weight: .semibold))
-            .foregroundStyle(.white)
+            // The notch is always dark, so its ink button is white.
+            .foregroundStyle(isProminent ? Color.black : Color.white)
             .padding(.horizontal, 14)
             .padding(.vertical, 7)
             .background(
-                isProminent ? Color.accentColor : Color.white.opacity(0.12),
+                isProminent ? Color.white.opacity(0.92) : Color.white.opacity(0.12),
                 in: Capsule()
             )
             .contentShape(Capsule())
