@@ -186,7 +186,7 @@ struct MeetingsHomeView: View {
 
             // Slides sideways between Meetings and Archived, and by direction between layouts.
             VStack(alignment: .leading, spacing: 0) {
-                if filter == .meetings && !pinnedSessions.isEmpty {
+                if filter == .meetings && layout == .grid {
                     pinnedSection
                 }
                 layoutContent(filter)
@@ -252,7 +252,10 @@ struct MeetingsHomeView: View {
     @ViewBuilder
     private func layoutContent(_ page: MeetingListFilter) -> some View {
         let shown = sessions(for: page)
-        let groups = MeetingActivityGroup.groups(for: shown)
+        // Pinned meetings show in the Pinned list instead of their day, so pinning moves the row
+        // up rather than copying it (the calendar still shows every meeting on its day).
+        let groups = MeetingActivityGroup.groups(for: page == .meetings ? shown.filter { !$0.isPinned } : shown)
+        let pinned = page == .meetings ? pinnedSessions : []
         if layout == .calendar {
             MeetingCalendarView(
                 sessions: shown,
@@ -260,8 +263,10 @@ struct MeetingsHomeView: View {
                 actions: actions(for:),
                 isRecording: isRecording
             )
-        } else if groups.isEmpty {
+        } else if groups.isEmpty && pinned.isEmpty {
             emptyState(page)
+        } else if layout == .list {
+            flatList(Self.listItems(shown, pinned: pinned, separatingPinned: page == .meetings, shows: PinStaging.shared.headingShows))
         } else {
             let split = Self.eagerSplit(groups)
             VStack(alignment: .leading, spacing: 0) {
@@ -277,6 +282,90 @@ struct MeetingsHomeView: View {
                 }
             }
         }
+    }
+
+    /// The list layout as one run of headings and rows, Pinned first. One `ForEach` keyed by
+    /// meeting, so pinning or unpinning reorders a row and SwiftUI moves it (up into Pinned, back
+    /// down into its day) instead of removing one copy and inserting another.
+    private static func listItems(
+        _ sessions: [MeetingSession],
+        pinned: [MeetingSession],
+        separatingPinned: Bool,
+        shows: (MeetingSession) -> Bool
+    ) -> [MeetingListItem] {
+        // Rows follow the saved pin; headings follow the staged one (`PinStaging`), so while a
+        // pin is staged the heading the row is leaving rolls away (or the one it's heading for
+        // opens) before the row moves.
+        var items: [MeetingListItem] = []
+        let inDays = separatingPinned ? sessions.filter { !$0.isPinned || !shows($0) } : sessions
+        let days = MeetingActivityGroup.groups(for: inDays)
+        func hasHeading(_ group: MeetingActivityGroup) -> Bool {
+            !separatingPinned || group.sessions.contains { !shows($0) }
+        }
+        // Unpinning the last pinned meeting into the top day: that day's heading takes the Pinned
+        // heading's line (one rolls out as the other rolls in, like the list title) instead of
+        // opening under the row, which then has nowhere to move. The mirror of pinning the top
+        // day's only meeting, where Pinned rolls in as the day rolls out.
+        var leadingDay: String?
+        if separatingPinned {
+            if sessions.contains(where: shows) {
+                items.append(.heading(id: "pinned", title: "Pinned", isFirst: true))
+            } else if let first = days.first, hasHeading(first), first.sessions.contains(where: \.isPinned) {
+                items.append(.heading(id: first.id, title: first.title, isFirst: true))
+                leadingDay = first.id
+            }
+            items += pinned.map { .row($0) }
+        }
+        for group in days {
+            if hasHeading(group) && group.id != leadingDay {
+                items.append(.heading(id: group.id, title: group.title, isFirst: items.isEmpty))
+            }
+            items += group.sessions.filter { !separatingPinned || !$0.isPinned }.map { .row($0) }
+        }
+        return items
+    }
+
+    @ViewBuilder
+    private func flatList(_ items: [MeetingListItem]) -> some View {
+        // Eager head, lazy tail, as with the day groups (see `eagerMeetingCount`).
+        let split = Self.eagerSplit(items)
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(split.head) { flatItem($0) }
+            }
+            LazyVStack(alignment: .leading, spacing: 0) {
+                ForEach(split.tail) { flatItem($0) }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func flatItem(_ item: MeetingListItem) -> some View {
+        switch item {
+        case .heading(_, let title, let isFirst):
+            Text(title)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(AppTheme.textSecondary)
+                .padding(.horizontal, 12)
+                .padding(.top, isFirst ? 0 : 24)
+                .padding(.bottom, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .transition(.rollLine(up: true))
+        case .row(let session):
+            SessionListRowView(session: session, actions: actions(for: session))
+                .transition(.rollLine(up: true))
+        }
+    }
+
+    private static func eagerSplit(_ items: [MeetingListItem]) -> (head: [MeetingListItem], tail: [MeetingListItem]) {
+        var rows = 0
+        var index = 0
+        while index < items.count {
+            if case .heading = items[index], rows >= eagerMeetingCount { break }
+            if case .row = items[index] { rows += 1 }
+            index += 1
+        }
+        return (Array(items[..<index]), Array(items[index...]))
     }
 
     /// Whole day groups from the top until `eagerMeetingCount` meetings, then the rest.
@@ -310,25 +399,40 @@ struct MeetingsHomeView: View {
             AdaptiveCardGrid(minimumWidth: 260, spacing: 14) {
                 ForEach(group.sessions) { session in
                     MeetingCardView(session: session, actions: actions(for: session))
+                        // No fade when pinning takes a card out: the others close the gap.
+                        .transition(.identity)
                 }
             }
         }
     }
 
     /// Pinned meetings as list rows, above the meetings list, grid or calendar.
+    /// Always in the Meetings page, collapsed to nothing with no pins, so the first pin opens it
+    /// (the list below glides down) and the heading rolls up into its clipped line, like the list
+    /// title, instead of fading in. The last unpin rolls it up and out as the section closes.
     private var pinnedSection: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // Under the list's header now, so styled like a day's heading.
-            Text("Pinned")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(AppTheme.textSecondary)
-                .padding(.horizontal, 12)
-                .padding(.bottom, 8)
+        let hasPins = !pinnedSessions.isEmpty
+        return VStack(alignment: .leading, spacing: 0) {
+            ZStack(alignment: .topLeading) {
+                if hasPins {
+                    // Under the list's header now, so styled like a day's heading.
+                    Text("Pinned")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(AppTheme.textSecondary)
+                        .padding(.horizontal, 12)
+                        .padding(.bottom, 8)
+                        .transition(.asymmetric(insertion: .offset(y: 22), removal: .offset(y: -22)))
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(height: hasPins ? nil : 0, alignment: .top)
+            .clipped()
             ForEach(pinnedSessions) { session in
                 SessionListRowView(session: session, actions: actions(for: session))
+                    .transition(.rollLine(up: true))
             }
         }
-        .padding(.bottom, 24)
+        .padding(.bottom, hasPins ? 24 : 0)
     }
 
     private func listTitle(_ page: MeetingListFilter) -> String {
@@ -516,5 +620,69 @@ private struct StatusBanner: View {
         .padding(.vertical, 9)
         .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(AppTheme.bgSidebar))
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(AppTheme.border, lineWidth: 1))
+    }
+}
+
+/// A heading or a meeting row in the flat list layout.
+private enum MeetingListItem: Identifiable {
+    case heading(id: String, title: String, isFirst: Bool)
+    case row(MeetingSession)
+
+    var id: String {
+        switch self {
+        case .heading(let id, _, _): "heading-" + id
+        case .row(let session): session.id.uuidString
+        }
+    }
+}
+
+extension AnyTransition {
+    /// A line that opens and closes instead of fading: its height grows from zero (the lines below
+    /// glide down to make room) while the content rolls into the clipped line, and the reverse on
+    /// the way out. `up`: comes in from below and leaves upward.
+    static func rollLine(up: Bool) -> AnyTransition {
+        .asymmetric(
+            insertion: .modifier(active: RollLine(fraction: 0, from: up ? 1 : -1), identity: RollLine(fraction: 1, from: up ? 1 : -1)),
+            removal: .modifier(active: RollLine(fraction: 0, from: up ? -1 : 1), identity: RollLine(fraction: 1, from: up ? -1 : 1))
+        )
+    }
+}
+
+private struct RollLine: ViewModifier {
+    var fraction: CGFloat
+    /// +1: the content sits below the line while closed, −1 above.
+    var from: CGFloat
+
+    func body(content: Content) -> some View {
+        RollLineLayout(fraction: fraction, from: from) { content }
+            .clipped()
+    }
+}
+
+/// Reports `fraction` of its content's height and slides the content by the rest, so the line
+/// opens and closes in the layout (an offset alone would leave the space in place).
+private struct RollLineLayout: Layout {
+    var fraction: CGFloat
+    var from: CGFloat
+
+    var animatableData: CGFloat {
+        get { fraction }
+        set { fraction = newValue }
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let child = subviews.first else { return .zero }
+        let size = child.sizeThatFits(ProposedViewSize(width: proposal.width, height: nil))
+        return CGSize(width: proposal.width ?? size.width, height: size.height * max(0, fraction))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard let child = subviews.first else { return }
+        let size = child.sizeThatFits(ProposedViewSize(width: bounds.width, height: nil))
+        let shift = from * (1 - fraction) * size.height
+        child.place(
+            at: CGPoint(x: bounds.minX, y: bounds.minY + shift),
+            proposal: ProposedViewSize(width: bounds.width, height: size.height)
+        )
     }
 }

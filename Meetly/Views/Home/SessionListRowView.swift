@@ -34,7 +34,7 @@ extension MeetingItemActions {
                 Task { await sessionManager.continueMeeting(session) }
             } : nil,
             onTogglePin: isArchived ? nil : {
-                SessionActions.togglePin(session, context: context)
+                PinStaging.shared.toggle(session, context: context)
             },
             onArchive: isArchived || isInUse ? nil : {
                 SessionActions.archive(session, context: context)
@@ -60,11 +60,12 @@ struct SessionListRowView: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            if session.isPinned {
+            if PinStaging.shared.shows(session) {
                 Image(systemName: "pin.fill")
                     .font(.system(size: 9, weight: .semibold))
                     .foregroundStyle(AppTheme.textSecondary)
                     .accessibilityLabel("Pinned")
+                    .transition(.pinMarker)
             }
 
             Text(session.displayTitle)
@@ -120,11 +121,12 @@ struct MeetingCardView: View {
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                if session.isPinned {
+                if PinStaging.shared.shows(session) {
                     Image(systemName: "pin.fill")
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(AppTheme.textSecondary)
                         .padding(.top, 4)
+                        .transition(.pinMarker)
                 }
             }
 
@@ -237,8 +239,8 @@ private struct MeetingQuickActions: View {
             }
             if let onTogglePin = actions.onTogglePin {
                 button(
-                    icon: session.isPinned ? "pin.slash" : "pin",
-                    help: session.isPinned ? "Unpin" : "Pin",
+                    icon: PinStaging.shared.shows(session) ? "pin.slash" : "pin",
+                    help: PinStaging.shared.shows(session) ? "Unpin" : "Pin",
                     action: onTogglePin
                 )
             }
@@ -257,6 +259,8 @@ private struct MeetingQuickActions: View {
             Image(systemName: icon)
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(AppTheme.textSecondary)
+                // Pin ⇄ Unpin swaps like a system symbol instead of crossfading.
+                .contentTransition(.symbolEffect(.replace.downUp))
                 .frame(width: 24, height: 24)
                 .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(AppTheme.bgInput))
         }
@@ -276,7 +280,7 @@ extension View {
             }
             Divider()
             if let onTogglePin = actions.onTogglePin {
-                Button(session.isPinned ? "Unpin" : "Pin", action: onTogglePin)
+                Button(PinStaging.shared.shows(session) ? "Unpin" : "Pin", action: onTogglePin)
             }
             Button("Export as Markdown…", action: actions.onExport)
             if let onUnarchive = actions.onUnarchive {
@@ -320,7 +324,7 @@ struct SearchResultRowView: View {
 
         VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 8) {
-                if session.isPinned {
+                if PinStaging.shared.shows(session) {
                     Image(systemName: "pin.fill")
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(AppTheme.textSecondary)
@@ -460,4 +464,95 @@ enum SearchSnippet {
             .map { text.index(after: $0) } ?? start
         return "…" + flattened(text[wordStart...])
     }
+}
+
+/// Pinning plays in beats, one thing at a time: a day heading the meeting leaves empty rolls
+/// away (and Pinned rolls in if it's the first pin), then the pin appears by the title, then the
+/// row moves up into Pinned. Unpinning plays it the other way round: the pin goes, then the
+/// headings change (its day's heading opens, Pinned rolls away after the last pin), then the row
+/// moves down. A beat that would change nothing is skipped.
+///
+/// While a toggle plays, the marker, the Pin / Unpin button and the menu follow `shows`, the
+/// list's headings follow `headingShows`, and the rows' order follows the saved `isPinned`.
+@MainActor @Observable
+final class PinStaging {
+    static let shared = PinStaging()
+
+    /// The marker state shown ahead of the saved one, per meeting.
+    private var markers: [UUID: Bool] = [:]
+    /// The pin state the list's headings are laid out for, ahead of the saved one.
+    private var headings: [UUID: Bool] = [:]
+
+    private static let headingBeat: TimeInterval = 0.3
+    private static let markerBeat: TimeInterval = 0.26
+    private static let marker = Animation.spring(duration: 0.3, bounce: 0.15)
+
+    func shows(_ session: MeetingSession) -> Bool {
+        markers[session.id] ?? session.isPinned
+    }
+
+    func headingShows(_ session: MeetingSession) -> Bool {
+        headings[session.id] ?? session.isPinned
+    }
+
+    func toggle(_ session: MeetingSession, context: ModelContext) {
+        let id = session.id
+        guard markers[id] == nil, headings[id] == nil else { return }
+        guard let move = AppMotion.resolved(AppMotion.content) else {
+            SessionActions.togglePin(session, context: context)
+            return
+        }
+        let pinning = !session.isPinned
+        let headingBeat = changesHeadings(session, context: context)
+
+        var steps: [(TimeInterval, () -> Void)] = []
+        let headingStep: (TimeInterval, () -> Void) = (Self.headingBeat, { [weak self] in
+            withAnimation(move) { self?.headings[id] = pinning }
+        })
+        let markerStep: (TimeInterval, () -> Void) = (Self.markerBeat, { [weak self] in
+            withAnimation(Self.marker) { self?.markers[id] = pinning }
+        })
+        if pinning {
+            if headingBeat { steps.append(headingStep) }
+            steps.append(markerStep)
+        } else {
+            steps.append(markerStep)
+            if headingBeat { steps.append(headingStep) }
+        }
+        steps.append((0, { [weak self] in
+            withAnimation(move) {
+                SessionActions.togglePin(session, context: context)
+                self?.markers[id] = nil
+                self?.headings[id] = nil
+            }
+        }))
+        run(steps[...])
+    }
+
+    private func run(_ steps: ArraySlice<(TimeInterval, () -> Void)>) {
+        guard let (wait, step) = steps.first else { return }
+        step()
+        let rest = steps.dropFirst()
+        guard !rest.isEmpty else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + wait) { [weak self] in self?.run(rest) }
+    }
+
+    /// Whether toggling `session` opens or closes a heading: Pinned when it's the first or last
+    /// pin, or its day when it's that day's only meeting outside Pinned.
+    private func changesHeadings(_ session: MeetingSession, context: ModelContext) -> Bool {
+        guard let all = try? context.fetch(FetchDescriptor<MeetingSession>()) else { return true }
+        let others = all.filter { !$0.isArchivedValue && $0.id != session.id }
+        let calendar = Calendar.current
+        let otherPinned = others.contains { headingShows($0) }
+        let dayHasOthers = others.contains {
+            !headingShows($0) && calendar.isDate($0.startedAt, inSameDayAs: session.startedAt)
+        }
+        return !otherPinned || !dayHasOthers
+    }
+}
+
+extension AnyTransition {
+    /// The pin by a pinned meeting's title grows out of nothing as the title glides over to make
+    /// room, and shrinks away as it glides back: no fade.
+    static var pinMarker: AnyTransition { .scale(scale: 0.01) }
 }
