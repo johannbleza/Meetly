@@ -1,7 +1,7 @@
 import AppKit
 
-/// Pulls the floating overlay out of the notch with the pointer: the genie in reverse, scrubbed
-/// by the drag.
+/// Pulls a window out of the notch with the pointer: the genie in reverse, scrubbed by the drag.
+/// The floating overlay, or the main window when the idle notch holds it.
 ///
 /// Once the notch gives way, the panel comes out of the notch's mouth through the genie funnel,
 /// and how far it's out follows the pull: further down brings more of it out, back up takes it
@@ -297,8 +297,11 @@ final class NotchTearOff: NSObject {
             x: (CGFloat(drawnX.value) * scale).rounded() / scale,
             y: (CGFloat(drawnY.value) * scale).rounded() / scale
         )
-        // Moved while the mesh still draws it at that spot, then unwarped there.
+        // Moved while the mesh still draws it at that spot, then unwarped there. The move is
+        // committed first: a titled window (the main window) otherwise reached the WindowServer
+        // after the warp came off, and was drawn for a frame where it had been parked.
         window.setFrameOrigin(origin)
+        CATransaction.flush()
         WindowWarp.clear(window)
         // Front of the genie level first, so dropping back to its own level leaves it on top.
         window.orderFrontRegardless()

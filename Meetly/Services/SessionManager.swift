@@ -229,6 +229,28 @@ final class SessionManager {
         OverlayPanelController.shared.dockOverlay()
     }
 
+    /// The main window was dragged into the notch: it's sucked in, and the notch opens over it
+    /// on the meeting, or on "Ready to record" when there isn't one.
+    func dockMainWindowIntoNotch() {
+        guard state != .summarizing else { return }
+        overlayDock = .notch
+        overlayPresentation = .expanded
+        // It holds the main window now, so a call that ends doesn't close it.
+        overlayShownForPrompt = false
+        OverlayPanelController.shared.dockMainWindow()
+    }
+
+    /// The main window came back out of the idle notch, which closes behind it. Like hiding
+    /// the overlay, that answers a call prompt with "not now".
+    func mainWindowLeftNotch() {
+        if let detectedMeetingPrompt {
+            suppressedSource = detectedMeetingPrompt.source
+            self.detectedMeetingPrompt = nil
+        }
+        overlayShownForPrompt = false
+        overlayPresentation = .hidden
+    }
+
     /// Records where the overlay ended up. Called by `OverlayPanelController` as its handoff
     /// animations finish, so menus and toolbars always match what's on screen.
     func setOverlayDock(_ dock: OverlayDock) {
@@ -1318,6 +1340,9 @@ extension SessionManager {
             resetNotchDemoTranscript()
             state = .idle
             sessionStartedAt = nil
+        case "windowDock":
+            // The main window dropped on the notch, as if dragged there by its title bar.
+            dockMainWindowIntoNotch()
         case "popOut":
             popOutOverlay()
         case "dock":

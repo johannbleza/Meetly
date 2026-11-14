@@ -180,7 +180,7 @@ struct SettingsView: View {
         SettingsSection("Startup and appearance") {
             SettingsRow(
                 title: "Open at login",
-                subtitle: openAtLoginError ?? "Meets starts automatically when you log in, so it can notice calls.",
+                subtitle: openAtLoginError ?? "Meets starts in the menu bar when you log in, so it can notice calls. Open the window from the menu bar or the Dock.",
                 subtitleColor: openAtLoginError == nil ? AppTheme.textSecondary : AppTheme.danger
             ) {
                 settingsSwitch("Open Meets at login", isOn: Binding(get: { openAtLogin }, set: { setOpenAtLogin($0) }))

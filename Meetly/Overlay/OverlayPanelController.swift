@@ -46,6 +46,9 @@ final class OverlayPanelController: NotchPanelControllerDelegate {
     let overlayGenie = WindowGenieController(response: 0.42)
     /// Pulling the notch: the floating overlay is pulled out of it by the drag.
     let tearOff = NotchTearOff()
+    /// Pulling the idle notch with the main window inside it: the main window is pulled out of
+    /// it by the drag instead.
+    let windowTearOff = NotchTearOff()
 
     private var panel: KeyablePanel?
     private weak var sessionManager: SessionManager?
@@ -94,6 +97,15 @@ final class OverlayPanelController: NotchPanelControllerDelegate {
         }
         overlayGenie.onFinish = { [weak self] direction, completed in
             self?.overlayGenieFinished(direction, completed: completed)
+        }
+        windowTearOff.onProgress = { [weak self] phase, progress, slide in
+            self?.windowPullProgressed(phase, progress: progress, slide: slide)
+        }
+        windowTearOff.onCommit = { [weak self] in
+            self?.windowPullCommitted()
+        }
+        windowTearOff.onFinish = { [weak self] outcome in
+            self?.windowPullFinished(outcome)
         }
     }
 
@@ -145,6 +157,8 @@ final class OverlayPanelController: NotchPanelControllerDelegate {
 
     func hide() {
         endTearOff()
+        // Hidden with the main window inside: it stays hidden, and comes back the usual ways.
+        holdsMainWindow = false
         presentation = .hidden
         hideFloating()
         notch.dismiss()
@@ -191,12 +205,15 @@ final class OverlayPanelController: NotchPanelControllerDelegate {
     /// A meeting starting: the main window is sucked up into the notch like minimize sucks a
     /// window into the Dock, and the notch opens into the overlay as it swallows the last of
     /// it. Just hides the window and grows the notch open when the window isn't showing, or
-    /// not on the display the notch opens on.
-    func showAbsorbingMainWindow() {
+    /// not on the display the notch opens on. `reach`: how far the notch already reaches for
+    /// the window (it was carried over the notch), which it keeps until it gulps.
+    func showAbsorbingMainWindow(reachingFrom reach: CGFloat = 0) {
         let windows = MainWindowController.shared
         endTearOff()
         stopHandoff = nil
         motion.holdsMeetingLayout = false
+        holdsMainWindow = false
+        genieReachFloor = reach
         if windowGenie.direction == .expand, let window = windows.window {
             // Started again while the last stop was still pouring out: it turns back around.
             presentation = .expanded
@@ -246,6 +263,7 @@ final class OverlayPanelController: NotchPanelControllerDelegate {
         let windows = MainWindowController.shared
         // Committed, it's left out whole and goes in with the rest of the floating overlay.
         endTearOff()
+        holdsMainWindow = false
         let isFloatingShowing = dock == .floating && isFloatingVisible
         presentation = .hidden
         stopHandoff = nil
@@ -334,6 +352,7 @@ final class OverlayPanelController: NotchPanelControllerDelegate {
         }
         notch.beginPouringOut()
         genieReach = nil
+        genieReachFloor = 0
         guard windowGenie.expand(window, from: notch.genieTarget(), launched: launched) else {
             genieLog("stop: genie refused")
             if !isOverlayGoingIn { hide() } else { notch.dismiss() }
@@ -362,6 +381,9 @@ final class OverlayPanelController: NotchPanelControllerDelegate {
     /// The reach last handed to the notch during a genie, in steps of 0.05, so the notch isn't
     /// re-animated every display frame.
     private var genieReach: CGFloat?
+    /// A window dragged over the notch already has it reaching: going in, the notch doesn't let
+    /// go of that reach first and then reach again.
+    private var genieReachFloor: CGFloat = 0
 
     private func genieProgressed(_ direction: WindowGenieController.Direction, progress: CGFloat, slide: CGFloat) {
         guard presentation != .hidden || direction == .expand else {
@@ -399,6 +421,7 @@ final class OverlayPanelController: NotchPanelControllerDelegate {
 
     private func genieFinished(_ direction: WindowGenieController.Direction, completed: Bool) {
         genieReach = nil
+        genieReachFloor = 0
         defer {
             let waiters = genieWaiters
             genieWaiters = []
@@ -424,7 +447,7 @@ final class OverlayPanelController: NotchPanelControllerDelegate {
     }
 
     private func setGenieReach(_ reach: CGFloat) {
-        let stepped = (reach * 20).rounded() / 20
+        let stepped = (max(reach, genieReachFloor) * 20).rounded() / 20
         guard stepped != genieReach else { return }
         genieReach = stepped
         notch.setReach(stepped)
@@ -464,6 +487,305 @@ final class OverlayPanelController: NotchPanelControllerDelegate {
         return best?.screen
     }
 
+    // MARK: - The main window into the notch and back out, by hand
+
+    /// The main window is in the notch because it was dragged there, not because a meeting
+    /// started: opening it some other way (the menu bar) pours it back out of the notch.
+    private(set) var holdsMainWindow = false
+    /// How far the notch reaches for the main window being carried over it.
+    private var mainWindowReach: CGFloat = 0
+    private var isMainWindowDockReady = false
+    private var mainWindowAnimator: WindowSpringAnimator?
+    /// Where the pointer holds the main window (from its top-left) as it's pulled out of the
+    /// notch: the middle of its toolbar.
+    private var mainWindowGrabOffset = CGPoint.zero
+    /// The notch took the main window back during a pull (so it isn't opened twice).
+    private var isWindowPullAbsorbed = false
+    /// Where the main window was before a pull parked it under the pointer: a pull that goes
+    /// back in puts it back there, so it comes out of the notch later where it went in.
+    private var windowPullHome: CGPoint?
+
+    /// Which window the current pull out of the notch brings out.
+    private enum PullTarget {
+        case overlay
+        case mainWindow
+    }
+    private var pullTarget: PullTarget = .overlay
+
+    /// The main window can go into the notch: not while a summary is being written (the notch
+    /// would offer to record), and not while the overlay floats (the notch isn't open then).
+    private var canDockMainWindow: Bool {
+        guard let sessionManager, sessionManager.state != .summarizing,
+              MainWindowController.shared.canMorph else { return false }
+        return !(dock == .floating && isFloatingVisible)
+    }
+
+    /// The main window is being dragged by its title bar (`MainWindowController`): the notch
+    /// reaches for it as the pointer is pushed up into it, like it does for the floating
+    /// overlay. The window itself stops under the menu bar, so it's the pointer that asks.
+    func mainWindowDragMoved() {
+        guard canDockMainWindow, windowGenie.direction == nil, overlayGenie.direction == nil,
+              !windowTearOff.isRunning, !tearOff.isRunning else {
+            isMainWindowDockReady = false
+            setMainWindowReach(0)
+            return
+        }
+        var (target, reach) = mainWindowDock(for: NSEvent.mouseLocation)
+        // An open notch stays where it is: only its own display's notch takes the window.
+        if notch.model.isPresented, target != notch.metrics {
+            reach = 0
+        }
+        if reach > 0, let target, target != notch.metrics {
+            notch.setReach(0)
+            notch.move(to: target)
+        }
+        setMainWindowReach(reach)
+        let isReady = reach > 0.6
+        if isReady, !isMainWindowDockReady {
+            OverlayPhysics.haptic(.alignment)
+        }
+        isMainWindowDockReady = isReady
+    }
+
+    /// The main window was let go. Over the notch, it's sucked in (true); otherwise the notch
+    /// lets go of it.
+    @discardableResult
+    func mainWindowDragEnded() -> Bool {
+        let isReady = isMainWindowDockReady
+        isMainWindowDockReady = false
+        guard isReady, canDockMainWindow, let sessionManager else {
+            setMainWindowReach(0)
+            return false
+        }
+        genieLog("main window dropped on the notch (reach \(mainWindowReach))")
+        sessionManager.dockMainWindowIntoNotch()
+        return true
+    }
+
+    /// Sucks the main window into the notch it was dropped on, and the notch opens over the
+    /// last of it on whatever it shows: "Ready to record" when there's no meeting. Called by
+    /// `SessionManager.dockMainWindowIntoNotch`, which opens the overlay first.
+    func dockMainWindow() {
+        let reach = mainWindowReach
+        mainWindowReach = 0
+        mainWindowAnimator?.stop()
+        showAbsorbingMainWindow(reachingFrom: reach)
+        holdsMainWindow = true
+    }
+
+    /// Opened some other way (the menu bar) while it's in the notch it was dragged into: the
+    /// main window pours back out of the notch, which closes behind it. False when it isn't in
+    /// there, for the caller to just show it.
+    func releaseMainWindowFromNotch() -> Bool {
+        guard holdsMainWindow else { return false }
+        holdsMainWindow = false
+        let windows = MainWindowController.shared
+        guard let sessionManager, sessionManager.state == .idle, presentation != .hidden,
+              !windowTearOff.isRunning,
+              !windows.isMainWindowVisible || windowGenie.direction == .collapse else { return false }
+        sessionManager.mainWindowLeftNotch()
+        hideIntoMainWindow()
+        return true
+    }
+
+    private func setMainWindowReach(_ reach: CGFloat) {
+        guard reach != mainWindowReach else { return }
+        mainWindowReach = reach
+        notch.setReach(reach)
+    }
+
+    /// The notch under the pointer and how strongly it reaches for the main window the pointer
+    /// carries: only once the pointer is pushed up into the menu bar, near the notch.
+    private func mainWindowDock(for mouse: CGPoint) -> (metrics: NotchMetrics?, reach: CGFloat) {
+        guard let screen = NSScreen.screens.first(where: { NSMouseInRect(mouse, $0.frame, false) }) else {
+            return (nil, 0)
+        }
+        let metrics = NotchMetrics.metrics(for: screen)
+        let vertical = OverlayPhysics.smoothstep(-8, 14, mouse.y - metrics.dockPoint.y)
+        let horizontal = 1 - OverlayPhysics.smoothstep(110, 260, abs(mouse.x - metrics.centerX))
+        return (metrics, vertical * horizontal)
+    }
+
+    /// Pulling the idle notch brings out the main window when it's in there (hidden), rather
+    /// than the floating overlay.
+    private var pullsMainWindow: Bool {
+        let windows = MainWindowController.shared
+        guard sessionManager?.state == .idle, windows.window != nil, windows.canMorph else { return false }
+        return !windows.isMainWindowVisible || windowGenie.direction == .collapse
+    }
+
+    /// The pull gave way with the main window inside: it starts coming out of the notch's mouth,
+    /// drawn under the pointer, which holds its toolbar.
+    private func beginWindowPull(at mouse: CGPoint) {
+        let windows = MainWindowController.shared
+        guard let window = windows.window else { return }
+        // Whatever the genie was doing with it (the tail of going in), it starts over in the mouth.
+        windowGenie.cancel(hiding: true)
+        mainWindowAnimator?.stop()
+        mainWindowGrabOffset = CGPoint(x: (window.frame.width / 2).rounded(), y: 26)
+        windowPullHome = window.frame.origin
+        let origin = mainWindowOrigin(forPointer: mouse, size: window.frame.size)
+        // Parked where it'll be drawn: it isn't moved again while it's warped.
+        window.setFrameOrigin(origin)
+        genieReach = nil
+        genieReachFloor = 0
+        isWindowPullAbsorbed = false
+        guard !reduceMotion, windowTearOff.begin(window, mouth: notch.genieTarget(), drawnOrigin: origin) else {
+            genieLog("window pull: no genie (reduce motion \(reduceMotion))")
+            // It just appears under the pointer, and the rest of the drag carries it.
+            windowPullCommitted()
+            notch.setReach(0)
+            windows.showMainWindow()
+            return
+        }
+    }
+
+    private func windowPullMoved(to mouse: CGPoint, pull: CGFloat) {
+        guard let window = MainWindowController.shared.window else { return }
+        let origin = mainWindowOrigin(forPointer: mouse, size: window.frame.size)
+        if windowTearOff.isRunning {
+            windowTearOff.pointerMoved(drawnOrigin: origin, pull: pull)
+            return
+        }
+        // All the way out (or shown without the genie): the rest of the drag carries the
+        // window, and can carry it back up into the notch.
+        guard window.isVisible else { return }
+        mainWindowAnimator?.stop()
+        window.setFrameOrigin(origin)
+        mainWindowDragMoved()
+    }
+
+    private func windowPullEnded(at mouse: CGPoint, velocity: CGVector) {
+        guard let window = MainWindowController.shared.window else { return }
+        let size = window.frame.size
+        if windowTearOff.isRunning {
+            let origin = mainWindowOrigin(forPointer: mouse, size: size)
+            windowTearOff.released(
+                velocity: velocity,
+                restingOrigin: mainWindowRestingOrigin(from: origin, velocity: velocity, size: size)
+            )
+            return
+        }
+        guard window.isVisible, !mainWindowDragEnded() else { return }
+        settleMainWindow(
+            toward: mainWindowRestingOrigin(from: window.frame.origin, velocity: velocity, size: size),
+            velocity: velocity.magnitude > 500 ? velocity : .zero
+        )
+    }
+
+    private func windowPullProgressed(_ phase: NotchTearOff.Phase, progress: CGFloat, slide: CGFloat) {
+        if phase == .returning {
+            guard !isWindowPullAbsorbed else { return }
+            if slide >= 0.85 {
+                // Most of it is back in: the notch gulps and opens over the rest.
+                isWindowPullAbsorbed = true
+                genieReach = nil
+                notch.absorb()
+                return
+            }
+        }
+        // Reaching down for the funnel while it's close, letting go as it leaves.
+        setGenieReach(OverlayPhysics.smoothstep(0.15, 0.6, progress))
+    }
+
+    /// It's coming out for good: the notch closes behind it.
+    private func windowPullCommitted() {
+        windowPullHome = nil
+        holdsMainWindow = false
+        presentation = .hidden
+        sessionManager?.mainWindowLeftNotch()
+    }
+
+    private func windowPullFinished(_ outcome: NotchTearOff.Outcome) {
+        genieReach = nil
+        switch outcome {
+        case let .out(isHeld, restingOrigin, velocity):
+            notch.setReach(0)
+            // Key and in front, with the app active, as if it had been opened.
+            MainWindowController.shared.showMainWindow()
+            if isHeld {
+                // Still in hand: the notch reaches again if it's carried back up.
+                mainWindowDragMoved()
+            } else if let restingOrigin {
+                settleMainWindow(toward: restingOrigin, velocity: velocity)
+            }
+        case .backIn:
+            putMainWindowBackHome()
+            if !isWindowPullAbsorbed {
+                notch.absorb()
+            }
+            isWindowPullAbsorbed = false
+        }
+    }
+
+    /// The pull went back in (the window is ordered out): back to where it was before.
+    private func putMainWindowBackHome() {
+        if let home = windowPullHome, let window = MainWindowController.shared.window, !window.isVisible {
+            window.setFrameOrigin(home)
+        }
+        windowPullHome = nil
+    }
+
+    /// Ends a running pull of the main window for something else that needs it: once committed
+    /// it's left out whole where it's drawn, otherwise it's ordered out and the notch reopens.
+    func endWindowPull() {
+        guard windowTearOff.isRunning else { return }
+        let isOut = windowTearOff.cancel()
+        genieReach = nil
+        isWindowPullAbsorbed = false
+        if !isOut {
+            putMainWindowBackHome()
+        }
+        windowPullHome = nil
+        if isOut || presentation == .hidden {
+            notch.setReach(0)
+        } else {
+            notch.present()
+        }
+    }
+
+    /// Where the main window is drawn for the pointer at `mouse`: held by its toolbar, and never
+    /// under the menu bar, like a window dragged by its title bar.
+    private func mainWindowOrigin(forPointer mouse: CGPoint, size: CGSize) -> CGPoint {
+        var origin = CGPoint(
+            x: mouse.x - mainWindowGrabOffset.x,
+            y: mouse.y + mainWindowGrabOffset.y - size.height
+        )
+        if let screen = NSScreen.screens.first(where: { NSMouseInRect(mouse, $0.frame, false) }) {
+            origin.y = min(origin.y, screen.visibleFrame.maxY - size.height)
+        }
+        return origin
+    }
+
+    /// Where the main window let go at `origin` comes to rest: carried on by a fling, and on
+    /// screen under the menu bar (all of it, when it fits).
+    private func mainWindowRestingOrigin(from origin: CGPoint, velocity: CGVector, size: CGSize) -> CGPoint {
+        var target = origin
+        if velocity.magnitude > 500 {
+            target.x += OverlayPhysics.project(velocity.dx)
+            target.y += OverlayPhysics.project(velocity.dy)
+        }
+        let mouse = NSEvent.mouseLocation
+        guard let screen = NSScreen.screens.first(where: { NSMouseInRect(mouse, $0.frame, false) })
+            ?? NSScreen.screens.first else { return target }
+        let visible = screen.visibleFrame
+        let x = size.width < visible.width
+            ? min(max(target.x, visible.minX), visible.maxX - size.width)
+            : visible.minX
+        let top = min(max(target.y + size.height, min(visible.minY + size.height, visible.maxY)), visible.maxY)
+        return CGPoint(x: x.rounded(), y: (top - size.height).rounded())
+    }
+
+    private func settleMainWindow(toward origin: CGPoint, velocity: CGVector) {
+        guard let window = MainWindowController.shared.window else { return }
+        let distance = hypot(origin.x - window.frame.origin.x, origin.y - window.frame.origin.y)
+        guard distance > 0.5 || velocity.magnitude > 5 else { return }
+        mainWindowAnimator?.stop()
+        let animator = WindowSpringAnimator(window: window)
+        mainWindowAnimator = animator
+        animator.animate(to: origin, initialVelocity: velocity, spring: OverlayPhysics.Springs.windowFling)
+    }
+
     // MARK: - Leaving the notch
 
     /// Pops the overlay out of the notch without a drag: the genie in reverse. The notch
@@ -495,6 +817,13 @@ final class OverlayPanelController: NotchPanelControllerDelegate {
     /// pointer, which holds its toolbar. How far it's out follows the drag (`NotchTearOff`).
     func notchPullGaveWay(at mouse: CGPoint) {
         endTearOff()
+        if pullsMainWindow {
+            // Not recording, with the main window inside: it's the main window that comes out.
+            pullTarget = .mainWindow
+            beginWindowPull(at: mouse)
+            return
+        }
+        pullTarget = .overlay
         presentation = .expanded
         detachedGrabOffset = CGPoint(x: Self.canvasWidth / 2, y: 18)
         let origin = origin(forPointer: mouse)
@@ -507,6 +836,10 @@ final class OverlayPanelController: NotchPanelControllerDelegate {
     }
 
     func notchPullMoved(to mouse: CGPoint, pull: CGFloat) {
+        if pullTarget == .mainWindow {
+            windowPullMoved(to: mouse, pull: pull)
+            return
+        }
         let origin = origin(forPointer: mouse)
         if tearOff.isRunning {
             tearOff.pointerMoved(drawnOrigin: origin, pull: pull)
@@ -521,6 +854,10 @@ final class OverlayPanelController: NotchPanelControllerDelegate {
     }
 
     func notchPullEnded(at mouse: CGPoint, pull: CGFloat, velocity: CGVector) {
+        if pullTarget == .mainWindow {
+            windowPullEnded(at: mouse, velocity: velocity)
+            return
+        }
         if tearOff.isRunning {
             tearOff.released(
                 velocity: velocity,
@@ -551,9 +888,16 @@ final class OverlayPanelController: NotchPanelControllerDelegate {
         return tearOff.begin(panel, mouth: notch.genieTarget(), drawnOrigin: origin)
     }
 
+    /// Ends a running pull out of the notch (the overlay's or the main window's) for something
+    /// else that needs the windows.
+    private func endTearOff() {
+        endOverlayTearOff()
+        endWindowPull()
+    }
+
     /// Ends a running tear-off for something else that needs the panel: once committed it's
     /// left out whole where it's drawn, otherwise it's ordered out (the overlay stays docked).
-    private func endTearOff() {
+    private func endOverlayTearOff() {
         guard tearOff.isRunning else { return }
         if tearOff.cancel(), let panel {
             lastFloatingOrigin = panel.frame.origin
@@ -891,7 +1235,7 @@ final class OverlayPanelController: NotchPanelControllerDelegate {
     // MARK: - Floating panel
 
     private func showFloating() {
-        endTearOff()
+        endOverlayTearOff()
         rebuildPanelIfNeeded()
         guard let panel else { return }
         if overlayGenie.direction == .collapse {
@@ -910,7 +1254,7 @@ final class OverlayPanelController: NotchPanelControllerDelegate {
     }
 
     private func hideFloating() {
-        endTearOff()
+        endOverlayTearOff()
         overlayGenie.cancel(hiding: true)
         windowAnimator?.stop()
         panel?.orderOut(nil)
@@ -938,7 +1282,7 @@ final class OverlayPanelController: NotchPanelControllerDelegate {
     /// the user is working on. The floating panel keeps its spot if it's already there.
     /// Moves the overlay to `screen`, or by default to the display under the pointer.
     private func moveToActiveScreen(_ screen: NSScreen? = nil) {
-        endTearOff()
+        endOverlayTearOff()
         guard let screen = screen ?? NotchMetrics.activeScreen() else { return }
         // In floating mode too, so docking flies to this display's notch.
         notch.relocate(to: NotchMetrics.metrics(for: screen))

@@ -262,8 +262,15 @@ enum MeetsSymbol {
 /// Always the plain symbol: the notch already shows when a meeting is recording or paused.
 struct MenuBarIconLabel: View {
     var sessionManager: SessionManager
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         Image(nsImage: MeetsSymbol.menuBarImage())
+            .task {
+                // With no main window (after a login launch), showing it has to make one.
+                MainWindowController.shared.openWindow = { [openWindow] in
+                    openWindow(id: MainWindowController.windowID)
+                }
+            }
     }
 }

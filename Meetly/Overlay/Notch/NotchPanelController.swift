@@ -188,7 +188,9 @@ final class NotchPanelController {
                 model.phase = .receptive
             }
         }
-        guard abs(model.reach - reach) > 0.005 else { return }
+        // Reaching or letting go always counts, however small: a reach that eased down to a
+        // hair above 0 and then let go would otherwise never order the panel back out.
+        guard abs(model.reach - reach) > 0.005 || (reach == 0) != (model.reach == 0) else { return }
         withAnimation(.spring(response: 0.28, dampingFraction: 0.72)) {
             model.reach = reach
         }

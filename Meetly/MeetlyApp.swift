@@ -57,7 +57,7 @@ struct MeetlyApp: App {
     }
 
     var body: some Scene {
-        WindowGroup {
+        WindowGroup(id: MainWindowController.windowID) {
             ContentView(sessionManager: sessionManager)
                 .preferredColorScheme(appTheme.colorScheme)
         }
@@ -97,9 +97,21 @@ struct MeetlyApp: App {
 
 private final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Opened at login: start in the menu bar, with the main window hidden until it's asked for.
+        if Self.wasLaunchedAtLogin {
+            MainWindowController.shared.startHidden()
+        }
         ScreenShareExclusion.applyToAllWindows()
         Task.detached(priority: .utility) {
             await CLIEnvironment.loadShellPathIfNeeded()
         }
+    }
+
+    /// The launch's open-application event says the login item started the app. Only current
+    /// during `applicationDidFinishLaunching`.
+    private static var wasLaunchedAtLogin: Bool {
+        guard let event = NSAppleEventManager.shared().currentAppleEvent,
+              event.eventID == kAEOpenApplication else { return false }
+        return event.paramDescriptor(forKeyword: keyAEPropData)?.enumCodeValue == keyAELaunchedAsLogInItem
     }
 }
