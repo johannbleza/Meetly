@@ -29,6 +29,18 @@ struct HomeShellView: View {
         case meeting(UUID)
     }
 
+    /// Which page is on screen, for the page transition.
+    private enum PageKey: Hashable {
+        case home, meeting(UUID), search
+    }
+
+    /// How the next page change moves: search mode fades in over the morph; opening a meeting and
+    /// going forward slides the new page in from the right over the old one, which drifts left a
+    /// little (parallax); going back reverses it.
+    private enum PageMotion {
+        case fade, forward, back
+    }
+
     @State private var route: Route = .home
     @State private var backStack: [Route] = []
     @State private var forwardStack: [Route] = []
@@ -36,7 +48,11 @@ struct HomeShellView: View {
     /// ⌘K or the title-bar pill: the page is replaced by a large search field over the results.
     @State private var isSearchMode = false
     @State private var listFilter: MeetingListFilter = .meetings
-    @AppStorage("meetingListLayout") private var listLayout: MeetingListLayout = .list
+    /// Saved under `layoutDefaultsKey`. Kept in state rather than `@AppStorage`: a change made
+    /// through `@AppStorage` reached the page without its animation, so the layouts cut instead
+    /// of sliding.
+    @State private var listLayout: MeetingListLayout = Self.savedLayout
+    private static let layoutDefaultsKey = "meetingListLayout"
     @State private var calendarMonth = Date.now
     /// Bumped by ⌘K so pressing it again in search mode refocuses the field.
     @State private var searchFocusRequest = 0
@@ -59,8 +75,13 @@ struct HomeShellView: View {
     @State private var heroProgress: CGFloat = 1
     /// Keeps the home page over the meeting page while the card rises or falls back.
     @State private var isHeroAnimating = false
+    @State private var pageMotion: PageMotion = .fade
+    /// The page the last transition left, so the page sliding all the way can be drawn on top.
+    @State private var outgoingPage: PageKey?
 
-    private static let heroSpring = Animation.spring(duration: 0.5, bounce: 0.12)
+    private static var savedLayout: MeetingListLayout {
+        UserDefaults.standard.string(forKey: layoutDefaultsKey).flatMap(MeetingListLayout.init(rawValue:)) ?? .list
+    }
 
     private var allSessions: [MeetingSession] {
         activeSessions + archivedSessions
@@ -79,7 +100,10 @@ struct HomeShellView: View {
             homePage
         }
             .coordinateSpace(.named(MeetingHeroAnchor.coordinateSpace))
-            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { heroAnchor.pageHeight = $0 }
+            .onGeometryChange(for: CGSize.self) { $0.size } action: { size in
+                heroAnchor.pageHeight = size.height
+                heroAnchor.pageWidth = size.width
+            }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .appPanelBackground(AppTheme.bgPrimary)
             .overlay {
@@ -104,6 +128,9 @@ struct HomeShellView: View {
             }
             .onDisappear {
                 mouseNavigation.stop()
+            }
+            .onChange(of: listLayout) { _, layout in
+                UserDefaults.standard.set(layout.rawValue, forKey: Self.layoutDefaultsKey)
             }
             .onChange(of: allSessions.count) { _, _ in
                 search.meetingsChanged()
@@ -149,14 +176,17 @@ struct HomeShellView: View {
                 filter: $listFilter,
                 layout: $listLayout,
                 calendarMonth: $calendarMonth,
-                onOpen: { navigate(to: .meeting($0.id)) },
+                onOpen: { push(.meeting($0.id)) },
                 onOpenFeatured: openFeatured,
                 featuredAnchor: heroAnchor,
                 sessionPendingDelete: $sessionPendingDelete,
                 hero: isHeroAnimating ? heroMotion : nil
             )
             .allowsHitTesting(!isHeroAnimating)
-            .transition(.opacity)
+            .modifier(PageEdgeShadow())
+            .transition(pageTransition)
+            // Over the meeting page while the featured card opens into it or settles back.
+            .zIndex(isHeroAnimating ? 2 : pageZIndex(.home))
         }
     }
 
@@ -172,13 +202,17 @@ struct HomeShellView: View {
                 onFieldLaidOut: morphPillIntoField,
                 actions: { session in
                     itemActions(for: session) {
-                        closeSearch(animated: false)
-                        navigate(to: .meeting(session.id))
+                        transitionPage(.forward) {
+                            closeSearch(animated: false)
+                            navigate(to: .meeting(session.id))
+                        }
                     }
                 },
                 onClose: { closeSearch() }
             )
-            .transition(.opacity)
+            .modifier(PageEdgeShadow())
+            .transition(pageTransition)
+            .zIndex(pageZIndex(.search))
         } else if let openSession {
             SessionDetailView(
                 session: openSession,
@@ -201,8 +235,51 @@ struct HomeShellView: View {
                 heroAnchor: heroAnchor
             )
             .allowsHitTesting(!isHeroAnimating)
+            .modifier(PageEdgeShadow())
             .id(openSession.id)
+            .transition(pageTransition)
+            .zIndex(pageZIndex(.meeting(openSession.id)))
         }
+    }
+
+    // MARK: Page transition
+
+    private var currentPage: PageKey {
+        if isSearchMode { return .search }
+        if let openSession { return .meeting(openSession.id) }
+        return .home
+    }
+
+    private var pageTransition: AnyTransition {
+        let width = heroAnchor.pageWidth
+        switch pageMotion {
+        case .fade:
+            return .opacity
+        case .forward:
+            return .asymmetric(insertion: .offset(x: width), removal: .offset(x: -width * AppMotion.parallax))
+        case .back:
+            return .asymmetric(insertion: .offset(x: -width * AppMotion.parallax), removal: .offset(x: width))
+        }
+    }
+
+    /// The page that slides all the way across (the new one going forward, the old one going
+    /// back) is drawn over the one drifting underneath.
+    private func pageZIndex(_ page: PageKey) -> Double {
+        (page == outgoingPage) == (pageMotion == .back) ? 1 : 0
+    }
+
+    /// Sets how the page change moves, then makes it. A page being removed keeps the transition
+    /// and z-order from its last update, so those are applied in an update of their own first.
+    private func transitionPage(
+        _ motion: PageMotion,
+        animation: Animation = AppMotion.page,
+        _ change: @escaping () -> Void
+    ) {
+        let page = currentPage
+        let changed = motion != pageMotion || page != outgoingPage
+        pageMotion = motion
+        outgoingPage = page
+        AppMotion.afterDirection(changed: changed, animation, change)
     }
 
     // MARK: Title bar
@@ -242,6 +319,7 @@ struct HomeShellView: View {
                     .contentShape(Circle())
             }
             .buttonStyle(.plain)
+            .clickableCursor()
             .help("Settings (⌘,)")
             .accessibilityLabel("Settings")
         }
@@ -269,7 +347,7 @@ struct HomeShellView: View {
         searchFocusRequest += 1
         guard !isSearchMode else { return }
         isSearchRevealed = false
-        withAnimation(.easeOut(duration: 0.15)) { isSearchMode = true }
+        transitionPage(.fade, animation: .easeOut(duration: 0.15)) { isSearchMode = true }
         // The morph starts once the search field is laid out (`morphPillIntoField`).
     }
 
@@ -280,18 +358,29 @@ struct HomeShellView: View {
         }
     }
 
-    /// Leaves search mode. Animated, the field morphs back into the title-bar pill.
+    /// Leaves search mode. Animated, the field morphs back into the title-bar pill; otherwise it
+    /// leaves with whatever transaction it's called in (opening a result pushes its meeting).
     private func closeSearch(animated: Bool = true) {
         guard isSearchMode else { return }
+        isSearchRevealed = false
         if animated {
             // Before the page changes, while the field can still be measured.
             searchMorph.close {}
+            transitionPage(.fade, animation: .easeOut(duration: 0.18)) {
+                isSearchMode = false
+                search.text = ""
+            }
         } else {
             searchMorph.reset()
+            isSearchMode = false
+            search.text = ""
         }
-        isSearchRevealed = false
-        withAnimation(.easeOut(duration: 0.18)) { isSearchMode = false }
-        search.text = ""
+    }
+
+    /// Opens a page from the current one, sliding it in from the right.
+    private func push(_ newRoute: Route) {
+        guard newRoute != route else { return }
+        transitionPage(.forward) { navigate(to: newRoute) }
     }
 
     private func navigate(to newRoute: Route) {
@@ -318,7 +407,7 @@ struct HomeShellView: View {
         DispatchQueue.main.async {
             heroMetrics = measuredHeroMetrics()
             DispatchQueue.main.async {
-                withAnimation(Self.heroSpring, completionCriteria: .removed) {
+                withAnimation(AppMotion.hero, completionCriteria: .removed) {
                     heroProgress = 1
                 } completion: {
                     isHeroAnimating = false
@@ -340,7 +429,7 @@ struct HomeShellView: View {
                 return
             }
             heroMetrics = measuredHeroMetrics()
-            withAnimation(Self.heroSpring, completionCriteria: .removed) {
+            withAnimation(AppMotion.hero, completionCriteria: .removed) {
                 heroProgress = 0
             } completion: {
                 finishCollapse()
@@ -383,15 +472,21 @@ struct HomeShellView: View {
             collapseIntoFeatured()
             return
         }
-        guard let previous = backStack.popLast() else { return }
-        forwardStack.append(route)
-        route = previous
+        guard !backStack.isEmpty else { return }
+        transitionPage(.back) {
+            guard let previous = backStack.popLast() else { return }
+            forwardStack.append(route)
+            route = previous
+        }
     }
 
     private func goForward() {
-        guard !isHeroAnimating, !isSearchMode, let next = forwardStack.popLast() else { return }
-        backStack.append(route)
-        route = next
+        guard !isHeroAnimating, !isSearchMode, !forwardStack.isEmpty else { return }
+        transitionPage(.forward) {
+            guard let next = forwardStack.popLast() else { return }
+            backStack.append(route)
+            route = next
+        }
     }
 
     /// Drops history entries for meetings that no longer exist, and leaves a deleted meeting's page.
@@ -428,12 +523,12 @@ struct HomeShellView: View {
     private func archiveSession(_ session: MeetingSession) {
         guard !sessionManager.isInUse(session) else { return }
         SessionActions.archive(session, context: modelContext)
-        navigate(to: .home)
+        transitionPage(.back) { navigate(to: .home) }
     }
 
     private func unarchiveSession(_ session: MeetingSession) {
         SessionActions.unarchive(session, context: modelContext)
-        navigate(to: .home)
+        transitionPage(.back) { navigate(to: .home) }
     }
 
     private func deletePendingSession() {
@@ -458,6 +553,8 @@ final class MeetingHeroAnchor {
     var pageHeaderTop: CGFloat = 28
     var tabBlockHeight: CGFloat = 76
     var pageHeight: CGFloat = 800
+    /// How far pages slide in and out.
+    var pageWidth: CGFloat = 1100
 }
 
 /// The featured meeting opening (progress 0 → 1) or closing. The card is styled like the meeting
@@ -546,6 +643,7 @@ private struct TitleBarSearchButton: View {
         .background(LiquidAnchorView(anchor: anchor))
         .contentShape(Rectangle())
         .onTapGesture(perform: action)
+        .clickableCursor()
         .onHover { isHovered = $0 }
         // Swapped with the morph in the same frame, so no animation.
         .opacity(isHidden ? 0 : 1)
@@ -580,6 +678,7 @@ private struct TitleBarIconButton: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .clickableCursor()
         .onHover { isHovered = $0 }
         .help(help)
         .accessibilityLabel(help)

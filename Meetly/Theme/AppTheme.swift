@@ -156,6 +156,7 @@ struct AppSearchField: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .clickableCursor()
                 .accessibilityLabel("Clear search")
             }
         }

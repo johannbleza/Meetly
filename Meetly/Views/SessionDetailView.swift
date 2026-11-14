@@ -22,6 +22,10 @@ struct SessionDetailView: View {
     @State private var actionItemsController: ActionItemsController?
     @State private var summaryController: MeetingSummaryController?
     @State private var selectedTab: DetailTab = .summary
+    /// Whether the last tab switch went right (the new tab slides in from the trailing edge).
+    @State private var tabForward = true
+    /// The page's width: tabs slide all the way across it.
+    @State private var pageWidth: CGFloat = 900
     @State private var questionText = ""
     @State private var searchText = ""
     /// `searchText` after a short debounce; everything below filters by this.
@@ -56,7 +60,10 @@ struct SessionDetailView: View {
                             Rectangle().frame(height: hero.map { $0.tabBlockHeight - $0.summaryShift * (1 - $0.progress) })
                         }
                         .offset(y: heroBodyOffset)
-                    tabContent
+                    // Each tab slides across instead of crossfading over the last one. Applied
+                    // to the tab's views one by one (a Group), so the transcript stays lazy.
+                    Group { tabContent }
+                        .transition(.slide(forward: tabForward, distance: pageWidth))
                         .offset(y: heroBodyOffset)
                     Color.clear
                         .frame(height: 1)
@@ -70,6 +77,7 @@ struct SessionDetailView: View {
                 .padding(.bottom, 110)
                 .frame(maxWidth: .infinity)
             }
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { pageWidth = $0 }
             .onChange(of: qaController?.messages.last?.id) { _, _ in
                 scrollAskAIToBottom(proxy)
             }
@@ -182,11 +190,12 @@ struct SessionDetailView: View {
     private var tabBar: some View {
         HStack(spacing: 12) {
             AppSegmentedControl(
-                selection: $selectedTab,
+                selection: Binding { selectedTab } set: { selectTab($0) },
                 segments: DetailTab.allCases.map { tab in
                     .init(value: tab, title: tab.title, badge: tabBadge(tab))
                 },
-                height: 32
+                height: 32,
+                animation: nil
             )
             Spacer(minLength: 0)
             AppSearchField(
@@ -200,6 +209,16 @@ struct SessionDetailView: View {
             .accessibilityLabel("Search in meeting")
             .accessibilityHint("Finds keywords in the summary, transcript, and Ask AI history. Press Command F to focus.")
         }
+    }
+
+    /// Sets the slide direction first, then switches, so the old tab leaves toward the side the
+    /// new one isn't coming from.
+    private func selectTab(_ tab: DetailTab) {
+        guard tab != selectedTab else { return }
+        let forward = tab.order > selectedTab.order
+        let changed = forward != tabForward
+        tabForward = forward
+        AppMotion.afterDirection(changed: changed, AppMotion.content) { selectedTab = tab }
     }
 
     /// While searching, each tab shows how many matches it has.
@@ -343,9 +362,7 @@ struct SessionDetailView: View {
 
     private func ask(_ question: String) {
         guard let qaController else { return }
-        withAnimation(.snappy(duration: 0.2)) {
-            selectedTab = .askAI
-        }
+        selectTab(.askAI)
         Task { await qaController.ask(question) }
     }
 
@@ -371,7 +388,7 @@ struct SessionDetailView: View {
             Button("Find in Meeting") { isSearchFocused = true }
                 .keyboardShortcut("f", modifiers: .command)
             ForEach(Array(DetailTab.allCases.enumerated()), id: \.element) { index, tab in
-                Button(tab.title) { selectedTab = tab }
+                Button(tab.title) { selectTab(tab) }
                     .keyboardShortcut(KeyEquivalent(Character(String(index + 1))), modifiers: .command)
             }
         }
@@ -482,7 +499,7 @@ struct SessionDetailView: View {
                             title: "\(count) in \(tab.title)",
                             systemImage: "arrow.right"
                         ) {
-                            selectedTab = tab
+                            selectTab(tab)
                         }
                     }
                 }
@@ -547,6 +564,7 @@ private struct MeetingShareButton: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .clickableCursor()
             .help("Share this meeting as Markdown")
 
             Rectangle()
@@ -585,6 +603,7 @@ private struct MeetingShareButton: View {
             }
             .menuStyle(.button)
             .buttonStyle(.plain)
+            .clickableCursor()
             .menuIndicator(.hidden)
             .fixedSize()
             .accessibilityLabel("More meeting actions")
@@ -599,6 +618,8 @@ private struct MeetingShareButton: View {
 
 private enum DetailTab: CaseIterable, Hashable {
     case summary, transcript, askAI
+
+    var order: Int { Self.allCases.firstIndex(of: self) ?? 0 }
 
     var title: String {
         switch self {
@@ -814,6 +835,7 @@ private struct ActionItemRow: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .clickableCursor()
             .help(item.isCompleted ? "Mark as not done" : "Mark as done")
             .accessibilityLabel(item.isCompleted ? "Mark as not done" : "Mark as done")
 

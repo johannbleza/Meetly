@@ -147,6 +147,7 @@ struct MeetingSearchView: View {
                         .foregroundStyle(AppTheme.textSecondary)
                 }
                 .buttonStyle(.plain)
+                .clickableCursor()
                 .accessibilityLabel("Clear search")
             }
 

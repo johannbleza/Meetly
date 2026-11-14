@@ -5,8 +5,11 @@ enum MeetingListFilter: String, Hashable {
     case meetings, archived
 }
 
-enum MeetingListLayout: String, Hashable {
+enum MeetingListLayout: String, Hashable, CaseIterable {
     case list, grid, calendar
+
+    /// Left to right in the layout control, so switching slides the right way.
+    var order: Int { Self.allCases.firstIndex(of: self) ?? 0 }
 }
 
 /// The home page: a greeting band with the latest (or recording) meeting, then pinned meetings,
@@ -37,20 +40,26 @@ struct MeetingsHomeView: View {
     /// The greeting and banners go up with the card, and further, out under the title bar.
     private var greetingPush: CGFloat { ((hero?.lift ?? 0) - 90) * heroProgress }
 
-    @State private var showDeleteAllConfirmation = false
+    /// Whether the last layout switch went right in the control (the new layout slides in from
+    /// the trailing edge) or left.
+    @State private var layoutForward = true
 
     private static let columnWidth = AppTheme.pageMaxWidth
+    /// Meetings rendered eagerly at the top of the list (whole day groups until this many). The
+    /// featured meeting's curtain slides the list in from below the window, and a lazy stack only
+    /// creates rows once they're on screen: rows made mid-slide land at their final spots instead
+    /// of riding the curtain up, over the meeting page's text.
+    private static let eagerMeetingCount = 30
 
-    private var shownSessions: [MeetingSession] {
-        filter == .archived ? archivedSessions : activeSessions
+    private func sessions(for page: MeetingListFilter) -> [MeetingSession] {
+        page == .archived ? archivedSessions : activeSessions
     }
 
     var body: some View {
         ScrollView {
             VStack(spacing: 0) {
-                if filter == .meetings {
-                    greetingBand
-                }
+                // On both Meetings and Archived; only the list under it slides between them.
+                greetingBand
                 listSection
             }
             .overlayScrollers()
@@ -58,12 +67,23 @@ struct MeetingsHomeView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         // See-through while the meeting page is underneath: the band and the curtain cover it.
         .background { AppTheme.bgPrimary.opacity(hero == nil ? 1 : 0) }
-        .alert("Delete all archived meetings?", isPresented: $showDeleteAllConfirmation) {
-            Button("Cancel", role: .cancel) {}
-            Button("Delete All", role: .destructive, action: deleteAllArchived)
-        } message: {
-            Text("This permanently removes every archived meeting and cannot be undone.")
-        }
+    }
+
+    /// How far the list slides between Meetings and Archived: the page's width.
+    private var pageWidth: CGFloat { featuredAnchor.pageWidth }
+
+    /// Meetings' title sits above Archived's, so each always comes and goes on its own side:
+    /// picking Archived rolls "All meetings" up and out and "Archived meetings" up from below.
+    private static func titleRoll(_ page: MeetingListFilter) -> AnyTransition {
+        let y: CGFloat = page == .meetings ? -22 : 22
+        return .asymmetric(insertion: .offset(y: y), removal: .offset(y: y))
+    }
+
+    /// Meetings sits to the left of Archived, so each always comes and goes on its own side:
+    /// picking Archived slides Meetings out left and Archived in from the right, and back.
+    private static func filterSlide(_ page: MeetingListFilter, distance: CGFloat) -> AnyTransition {
+        let x = page == .meetings ? -distance : distance
+        return .asymmetric(insertion: .offset(x: x), removal: .offset(x: x))
     }
 
     // MARK: Greeting band
@@ -149,75 +169,32 @@ struct MeetingsHomeView: View {
 
     private var listSection: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if filter == .meetings && !pinnedSessions.isEmpty {
-                pinnedSection
-            }
-
+            // The header stays put. Its title rolls inside its own line, like a ticker: up to
+            // Archived, down back to Meetings.
             HStack(spacing: 10) {
-                AppSectionHeader(title: listTitle)
-                Spacer(minLength: 8)
-                if filter == .archived && !shownSessions.isEmpty {
-                    DetailPillButton(title: "Delete All", systemImage: "trash") {
-                        showDeleteAllConfirmation = true
-                    }
+                ZStack(alignment: .leading) {
+                    AppSectionHeader(title: listTitle(filter))
+                        .fixedSize()
+                        .id(filter)
+                        .transition(Self.titleRoll(filter))
                 }
-                AppSegmentedControl(
-                    selection: $filter,
-                    segments: [
-                        .init(value: .meetings, title: "Meetings"),
-                        .init(value: .archived, title: "Archived"),
-                    ]
-                )
-                AppSegmentedControl(
-                    selection: $layout,
-                    segments: [
-                        .init(value: .list, systemImage: "list.bullet", help: "List"),
-                        .init(value: .grid, systemImage: "square.grid.2x2", help: "Grid"),
-                        .init(value: .calendar, systemImage: "calendar", help: "Calendar"),
-                    ]
-                )
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .clipped()
+                listControls
             }
             .padding(.bottom, 16)
 
-            let groups = MeetingActivityGroup.groups(for: shownSessions)
-            if layout == .calendar {
-                MeetingCalendarView(
-                    sessions: shownSessions,
-                    month: $calendarMonth,
-                    actions: actions(for:),
-                    isRecording: isRecording
-                )
-            } else if groups.isEmpty {
-                emptyState
-            } else {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(groups) { group in
-                        Text(group.title)
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(AppTheme.textSecondary)
-                            .padding(.horizontal, layout == .list ? 12 : 0)
-                            .padding(.top, group.id == groups.first?.id ? 0 : 24)
-                            .padding(.bottom, 8)
-
-                        switch layout {
-                        case .list:
-                            ForEach(group.sessions) { session in
-                                SessionListRowView(session: session, actions: actions(for: session))
-                            }
-                        case .grid, .calendar:
-                            LazyVGrid(
-                                columns: [GridItem(.adaptive(minimum: 260), spacing: 14)],
-                                alignment: .leading,
-                                spacing: 14
-                            ) {
-                                ForEach(group.sessions) { session in
-                                    MeetingCardView(session: session, actions: actions(for: session))
-                                }
-                            }
-                        }
-                    }
+            // Slides sideways between Meetings and Archived, and by direction between layouts.
+            VStack(alignment: .leading, spacing: 0) {
+                if filter == .meetings && !pinnedSessions.isEmpty {
+                    pinnedSection
                 }
+                layoutContent(filter)
+                    .id(layout)
+                    .transition(.slide(forward: layoutForward, distance: pageWidth))
             }
+            .id(filter)
+            .transition(Self.filterSlide(filter, distance: pageWidth))
         }
         .frame(maxWidth: Self.columnWidth, alignment: .leading)
         .padding(.horizontal, 32)
@@ -232,25 +209,135 @@ struct MeetingsHomeView: View {
         .offset(y: curtainDrop)
     }
 
+    /// The Meetings / Archived filter and the list / grid / calendar switch.
+    private var listControls: some View {
+        HStack(spacing: 10) {
+            AppSegmentedControl(
+                selection: $filter,
+                segments: [
+                    .init(value: .meetings, title: "Meetings"),
+                    .init(value: .archived, title: "Archived"),
+                ],
+                animation: AppMotion.resolved(AppMotion.pager)
+            )
+            .zIndex(1)
+            AppSegmentedControl(
+                selection: layoutSelection,
+                segments: [
+                    .init(value: .list, systemImage: "list.bullet", help: "List"),
+                    .init(value: .grid, systemImage: "square.grid.2x2", help: "Grid"),
+                    .init(value: .calendar, systemImage: "calendar", help: "Calendar"),
+                ],
+                animation: nil
+            )
+            .zIndex(1)
+        }
+        .fixedSize()
+    }
+
+    /// Sets the slide direction first, then switches the layout, so the old layout leaves
+    /// toward the side the new one isn't coming from.
+    private var layoutSelection: Binding<MeetingListLayout> {
+        Binding {
+            layout
+        } set: { newValue in
+            guard newValue != layout else { return }
+            let forward = newValue.order > layout.order
+            let changed = forward != layoutForward
+            layoutForward = forward
+            AppMotion.afterDirection(changed: changed, AppMotion.content) { layout = newValue }
+        }
+    }
+
+    @ViewBuilder
+    private func layoutContent(_ page: MeetingListFilter) -> some View {
+        let shown = sessions(for: page)
+        let groups = MeetingActivityGroup.groups(for: shown)
+        if layout == .calendar {
+            MeetingCalendarView(
+                sessions: shown,
+                month: $calendarMonth,
+                actions: actions(for:),
+                isRecording: isRecording
+            )
+        } else if groups.isEmpty {
+            emptyState(page)
+        } else {
+            let split = Self.eagerSplit(groups)
+            VStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(split.head) { group in
+                        groupView(group, isFirst: group.id == groups.first?.id)
+                    }
+                }
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(split.tail) { group in
+                        groupView(group, isFirst: false)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Whole day groups from the top until `eagerMeetingCount` meetings, then the rest.
+    private static func eagerSplit(_ groups: [MeetingActivityGroup]) -> (head: [MeetingActivityGroup], tail: [MeetingActivityGroup]) {
+        var count = 0
+        var index = 0
+        while index < groups.count && count < eagerMeetingCount {
+            count += groups[index].sessions.count
+            index += 1
+        }
+        return (Array(groups[..<index]), Array(groups[index...]))
+    }
+
+    @ViewBuilder
+    private func groupView(_ group: MeetingActivityGroup, isFirst: Bool) -> some View {
+        Text(group.title)
+            .font(.system(size: 13, weight: .medium))
+            .foregroundStyle(AppTheme.textSecondary)
+            .padding(.horizontal, layout == .list ? 12 : 0)
+            .padding(.top, isFirst ? 0 : 24)
+            .padding(.bottom, 8)
+
+        switch layout {
+        case .list:
+            ForEach(group.sessions) { session in
+                SessionListRowView(session: session, actions: actions(for: session))
+            }
+        case .grid, .calendar:
+            // A plain grid rather than `LazyVGrid`: a group's cards are few, and lazy cells
+            // would miss the curtain's slide like lazy rows do (see `eagerMeetingCount`).
+            AdaptiveCardGrid(minimumWidth: 260, spacing: 14) {
+                ForEach(group.sessions) { session in
+                    MeetingCardView(session: session, actions: actions(for: session))
+                }
+            }
+        }
+    }
+
     /// Pinned meetings as list rows, above the meetings list, grid or calendar.
     private var pinnedSection: some View {
         VStack(alignment: .leading, spacing: 0) {
-            AppSectionHeader(title: "Pinned")
+            // Under the list's header now, so styled like a day's heading.
+            Text("Pinned")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(AppTheme.textSecondary)
+                .padding(.horizontal, 12)
                 .padding(.bottom, 8)
             ForEach(pinnedSessions) { session in
                 SessionListRowView(session: session, actions: actions(for: session))
             }
         }
-        .padding(.bottom, 28)
+        .padding(.bottom, 24)
     }
 
-        private var listTitle: String {
-        return filter == .archived ? "Archived meetings" : "All meetings"
+    private func listTitle(_ page: MeetingListFilter) -> String {
+        page == .archived ? "Archived meetings" : "All meetings"
     }
 
     @ViewBuilder
-    private var emptyState: some View {
-        if filter == .archived {
+    private func emptyState(_ page: MeetingListFilter) -> some View {
+        if page == .archived {
             MeetingActivityEmptyState(
                 systemImage: "archivebox",
                 title: "No archived meetings",
@@ -274,10 +361,52 @@ struct MeetingsHomeView: View {
             onDelete: { sessionPendingDelete = session }
         )
     }
+}
 
-    private func deleteAllArchived() {
-        let deletable = shownSessions.filter { !sessionManager.isInUse($0) }
-        SessionActions.deleteAllArchived(deletable, context: modelContext)
+/// Cards in as many columns of at least `minimumWidth` as fit, rows as tall as their tallest
+/// card and centered in it, like an adaptive `LazyVGrid`, but laid out eagerly.
+private struct AdaptiveCardGrid: Layout {
+    let minimumWidth: CGFloat
+    let spacing: CGFloat
+
+    private func columns(for width: CGFloat) -> Int {
+        max(1, Int((width + spacing) / (minimumWidth + spacing)))
+    }
+
+    private func rows(_ subviews: Subviews, width: CGFloat) -> (itemWidth: CGFloat, heights: [CGFloat], columns: Int) {
+        let columns = columns(for: width)
+        let itemWidth = (width - spacing * CGFloat(columns - 1)) / CGFloat(columns)
+        var heights: [CGFloat] = []
+        for start in stride(from: 0, to: subviews.count, by: columns) {
+            let row = subviews[start..<min(start + columns, subviews.count)]
+            heights.append(row.map { $0.sizeThatFits(.init(width: itemWidth, height: nil)).height }.max() ?? 0)
+        }
+        return (itemWidth, heights, columns)
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? minimumWidth
+        let layout = rows(subviews, width: width)
+        let height = layout.heights.reduce(0, +) + spacing * CGFloat(max(0, layout.heights.count - 1))
+        return CGSize(width: width, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let layout = rows(subviews, width: bounds.width)
+        var y = bounds.minY
+        for (rowIndex, rowHeight) in layout.heights.enumerated() {
+            for column in 0..<layout.columns {
+                let index = rowIndex * layout.columns + column
+                guard index < subviews.count else { break }
+                let x = bounds.minX + CGFloat(column) * (layout.itemWidth + spacing)
+                subviews[index].place(
+                    at: CGPoint(x: x, y: y + rowHeight / 2),
+                    anchor: .leading,
+                    proposal: .init(width: layout.itemWidth, height: nil)
+                )
+            }
+            y += rowHeight + spacing
+        }
     }
 }
 
@@ -333,6 +462,7 @@ private struct FeaturedMeetingCard: View {
         .contentShape(Rectangle())
         .onHover { isHovered = $0 }
         .onTapGesture(perform: onOpen)
+        .clickableCursor()
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isButton)
     }

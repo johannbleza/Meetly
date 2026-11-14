@@ -529,6 +529,7 @@ private struct SettingsNavItem: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .clickableCursor()
         .onHover { isHovered = $0 }
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
@@ -549,6 +550,7 @@ private struct SettingsTextButton: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .clickableCursor()
         .onHover { isHovered = $0 }
     }
 }

@@ -94,6 +94,7 @@ private struct ClearHistoryButton: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .clickableCursor()
         .onHover { isHovered = $0 }
         .help("Clear Ask AI history")
         .accessibilityLabel("Clear Ask AI history")
@@ -144,6 +145,7 @@ struct MeetingAskBar: View {
                         .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
+                .clickableCursor()
                 .fixedSize()
                 .help("Keep recording into this meeting. The summary is regenerated when you stop.")
             }
@@ -166,6 +168,7 @@ struct MeetingAskBar: View {
                         .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
+                .clickableCursor()
                 .disabled(!canSend)
                 .help("Ask AI")
                 .accessibilityLabel("Ask AI")
@@ -217,6 +220,7 @@ struct DetailPillButton: View {
             )
         }
         .buttonStyle(.plain)
+        .clickableCursor()
         .onHover { isHovered = $0 }
     }
 }

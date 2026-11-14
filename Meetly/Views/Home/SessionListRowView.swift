@@ -97,6 +97,7 @@ struct SessionListRowView: View {
         .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .onHover { isHovered = $0 }
         .onTapGesture(perform: actions.onOpen)
+        .clickableCursor()
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isButton)
         .meetingContextMenu(session: session, actions: actions)
@@ -165,6 +166,7 @@ struct MeetingCardView: View {
         .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .onHover { isHovered = $0 }
         .onTapGesture(perform: actions.onOpen)
+        .clickableCursor()
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isButton)
         .meetingContextMenu(session: session, actions: actions)
@@ -259,6 +261,7 @@ private struct MeetingQuickActions: View {
                 .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(AppTheme.bgInput))
         }
         .buttonStyle(.plain)
+        .clickableCursor()
         .help(help)
         .accessibilityLabel(help)
     }
@@ -371,6 +374,7 @@ struct SearchResultRowView: View {
         .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .onHover { isHovered = $0 }
         .onTapGesture(perform: actions.onOpen)
+        .clickableCursor()
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isButton)
         .accessibilityAddTraits(isSelected ? .isSelected : [])

@@ -17,6 +17,9 @@ struct AppSegmentedControl<Value: Hashable>: View {
     @Binding var selection: Value
     let segments: [Segment]
     var height: CGFloat = 28
+    /// Animates the change. Nil leaves it to the binding, for selections whose own setter
+    /// animates (content that slides by direction).
+    var animation: Animation? = .snappy(duration: 0.22)
 
     @Namespace private var namespace
 
@@ -25,7 +28,11 @@ struct AppSegmentedControl<Value: Hashable>: View {
             ForEach(segments) { segment in
                 let isSelected = segment.value == selection
                 Button {
-                    withAnimation(.snappy(duration: 0.22)) { selection = segment.value }
+                    if let animation {
+                        withAnimation(animation) { selection = segment.value }
+                    } else {
+                        selection = segment.value
+                    }
                 } label: {
                     HStack(spacing: 5) {
                         if let systemImage = segment.systemImage {
@@ -44,6 +51,10 @@ struct AppSegmentedControl<Value: Hashable>: View {
                     }
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(isSelected ? AppTheme.textPrimary : AppTheme.textSecondary)
+                    // The color swaps without interpolating the text: an interpolated label is
+                    // drawn apart from the control, so it trailed behind when the control moved
+                    // in the same animation (the home page's gliding list controls).
+                    .contentTransition(.identity)
                     .padding(.horizontal, segment.title == nil ? 8 : 12)
                     .frame(height: height - 6)
                     .background {
@@ -57,6 +68,7 @@ struct AppSegmentedControl<Value: Hashable>: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .clickableCursor()
                 .help(segment.help ?? segment.title ?? "")
                 .accessibilityLabel(segment.title ?? segment.help ?? "")
                 .accessibilityAddTraits(isSelected ? .isSelected : [])

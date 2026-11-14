@@ -84,6 +84,7 @@ private struct SummarizingPill: View {
             .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
         .buttonStyle(.plain)
+        .clickableCursor()
         .onHover { isHovered = $0 }
         .help("Stop summarizing this meeting")
         .accessibilityLabel("Stop summarizing")
@@ -129,6 +130,7 @@ struct TitleBarPill: View {
             .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
         .buttonStyle(.plain)
+        .clickableCursor()
         .onHover { isHovered = $0 }
     }
 

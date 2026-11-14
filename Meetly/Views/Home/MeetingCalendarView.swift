@@ -14,12 +14,21 @@ struct MeetingCalendarView: View {
 
     private var calendar: Calendar { .current }
 
+    /// Whether the last month change went forward (the new month slides in from the trailing edge).
+    @State private var monthForward = true
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             header
             VStack(spacing: 0) {
                 weekdayHeader
+                // Slides across inside the card when the month changes.
                 grid
+                    .id(monthKey)
+                    .transition(.asymmetric(
+                        insertion: .move(edge: monthForward ? .trailing : .leading),
+                        removal: .move(edge: monthForward ? .leading : .trailing)
+                    ))
             }
             .background(AppTheme.bgSidebar)
             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
@@ -44,8 +53,9 @@ struct MeetingCalendarView: View {
             HStack(spacing: 0) {
                 CalendarNavButton(systemImage: "chevron.left", help: "Previous month") { shiftMonth(by: -1) }
                 Rectangle().fill(AppTheme.border).frame(width: 1, height: 18)
-                Button("Today") { month = .now }
+                Button("Today") { show(.now) }
                     .buttonStyle(.plain)
+                    .clickableCursor()
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(AppTheme.textPrimary)
                     .padding(.horizontal, 10)
@@ -62,8 +72,23 @@ struct MeetingCalendarView: View {
 
     private func shiftMonth(by value: Int) {
         if let shifted = calendar.date(byAdding: .month, value: value, to: month) {
-            month = shifted
+            show(shifted)
         }
+    }
+
+    private var monthKey: Int {
+        let parts = calendar.dateComponents([.year, .month], from: month)
+        return (parts.year ?? 0) * 12 + (parts.month ?? 0)
+    }
+
+    /// Sets the slide direction first, then changes the month, so the old month leaves toward
+    /// the side the new one isn't coming from.
+    private func show(_ date: Date) {
+        guard !calendar.isDate(date, equalTo: month, toGranularity: .month) else { return }
+        let forward = date > month
+        let changed = forward != monthForward
+        monthForward = forward
+        AppMotion.afterDirection(changed: changed, AppMotion.content) { month = date }
     }
 
     // MARK: Grid
@@ -174,6 +199,7 @@ private struct CalendarDayCell: View {
                     isShowingAll = true
                 }
                 .buttonStyle(.plain)
+                .clickableCursor()
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(AppTheme.textSecondary)
                 .padding(.leading, 6)
@@ -269,6 +295,7 @@ private struct CalendarEventRow: View {
         )
         .contentShape(Rectangle())
         .onHover(perform: hoverChanged)
+        .clickableCursor()
         .onTapGesture {
             hideDetails()
             actions.onOpen()
@@ -393,6 +420,7 @@ private struct CalendarNavButton: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .clickableCursor()
         .help(help)
         .accessibilityLabel(help)
     }
