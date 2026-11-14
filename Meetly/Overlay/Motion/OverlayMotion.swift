@@ -12,10 +12,14 @@ final class OverlayMotion {
     /// The drawn panel's height (the window is a taller transparent canvas), measured by the
     /// view, so the genie funnels only what shows. Nothing draws from it.
     @ObservationIgnored var panelHeight: CGFloat = 0
+    /// Keeps the meeting panel drawn after the meeting stops, while it's sucked into the notch,
+    /// instead of it turning into the idle prompt on its way in.
+    var holdsMeetingLayout = false
 
     func reset() {
         opacity = 1
         dockReadiness = 0
+        holdsMeetingLayout = false
     }
 }
 

@@ -114,6 +114,8 @@ final class OverlayPanelController: NotchPanelControllerDelegate {
     /// Opens on the display under the pointer when it was hidden, or when `followingPointer`
     /// asks to bring it over from another display.
     func show(followingPointer: Bool = false) {
+        stopHandoff = nil
+        motion.holdsMeetingLayout = false
         if followingPointer || presentation == .hidden {
             moveToActiveScreen()
         }
@@ -176,6 +178,8 @@ final class OverlayPanelController: NotchPanelControllerDelegate {
     /// not on the display the notch opens on.
     func showAbsorbingMainWindow() {
         let windows = MainWindowController.shared
+        stopHandoff = nil
+        motion.holdsMeetingLayout = false
         if windowGenie.direction == .expand, let window = windows.window {
             // Started again while the last stop was still pouring out: it turns back around.
             presentation = .expanded
@@ -218,12 +222,14 @@ final class OverlayPanelController: NotchPanelControllerDelegate {
     }
 
     /// A meeting stopping: the main window pours back out of the notch into its frame, the
-    /// genie in reverse. The floating overlay, if that's where it was, fades out as it
-    /// starts. Just hides the overlay and shows the window when it can't.
+    /// genie in reverse. When the floating overlay is showing, it's sucked up into the notch
+    /// first and the window pours out as the last of it goes in (`stopHandoff`). Just hides
+    /// the overlay and shows the window when it can't.
     func hideIntoMainWindow() {
         let windows = MainWindowController.shared
         let isFloatingShowing = dock == .floating && isFloatingVisible
         presentation = .hidden
+        stopHandoff = nil
         if windowGenie.direction == .collapse, let window = windows.window {
             // Stopped before it was all the way in: it pours straight back out.
             notch.beginPouringOut()
@@ -233,9 +239,69 @@ final class OverlayPanelController: NotchPanelControllerDelegate {
         }
         // A start that just finished may not have ordered the window out yet.
         windowGenie.finishHiding()
+        if isFloatingShowing, !reduceMotion, suckFloatingInForStop() {
+            return
+        }
+        pourMainWindowOut(fadingFloating: isFloatingShowing)
+    }
+
+    /// The floating overlay is sucked up into the notch of the display it's on, like docking,
+    /// but the notch doesn't open over it: it hands over to the main window pouring out.
+    /// False when the warp can't run.
+    private func suckFloatingInForStop() -> Bool {
+        guard let panel else { return false }
+        // Set before the meeting state changes this turn, so the panel goes in as it was.
+        motion.holdsMeetingLayout = true
+        windowAnimator?.stop()
+        isDockReady = false
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+            motion.dockReadiness = 0
+        }
+        if overlayGenie.direction == nil {
+            let top = Self.topCenter(ofCanvasAt: panel.frame.origin)
+            if let screen = NSScreen.screens.first(where: { $0.frame.contains(top) }) {
+                notch.relocate(to: NotchMetrics.metrics(for: screen))
+            }
+            notch.prepareToReceive()
+        }
+        overlayReach = nil
+        isOverlayAbsorbed = false
+        // The window can pour out of the same notch while the overlay's tail is still going
+        // in; on another display it waits for the overlay to be all the way in.
+        let window = MainWindowController.shared.window
+        let sameDisplay = window.flatMap { Self.screen(containing: $0.frame) }?.frame == notch.metrics.screenFrame
+        stopHandoff = sameDisplay ? .early : .whenIn
+        // Slower than a dock: it's the whole point of the stop, so it should be watched going in.
+        guard overlayGenie.collapse(panel, into: notch.genieTarget(), response: 0.62) else {
+            genieLog("stop: overlay genie refused")
+            stopHandoff = nil
+            return false
+        }
+        return true
+    }
+
+    /// When the main window takes over from the floating overlay being sucked in on stop.
+    private enum StopHandoff {
+        /// As the overlay's last rows go in (same notch).
+        case early
+        /// Once the overlay is all the way in (the window pours out on another display).
+        case whenIn
+    }
+    private var stopHandoff: StopHandoff?
+
+    /// Hands the stop over from the overlay's genie to the main window's.
+    private func handOffStop() {
+        guard stopHandoff != nil else { return }
+        stopHandoff = nil
+        pourMainWindowOut(fadingFloating: false, launched: true)
+    }
+
+    private func pourMainWindowOut(fadingFloating: Bool, launched: Bool = false) {
+        let windows = MainWindowController.shared
+        let isOverlayGoingIn = overlayGenie.direction == .collapse
         // It pours out on the window's own display: the notch there takes over from the one
         // the meeting was showing on (⌘\ may have brought it to another display).
-        if !reduceMotion, let window = windows.window, !windows.isMainWindowVisible,
+        if !reduceMotion, !isOverlayGoingIn, let window = windows.window, !windows.isMainWindowVisible,
            let screen = Self.screen(containing: window.frame) {
             notch.relocate(to: NotchMetrics.metrics(for: screen))
         }
@@ -243,19 +309,21 @@ final class OverlayPanelController: NotchPanelControllerDelegate {
               !windows.isMainWindowVisible,
               Self.screen(containing: window.frame)?.frame == notch.metrics.screenFrame else {
             genieLog("stop: no genie (visible \(windows.isMainWindowVisible), can morph \(windows.canMorph))")
-            hide()
+            if !isOverlayGoingIn { hide() } else { notch.dismiss() }
             windows.showMainWindow()
             return
         }
         notch.beginPouringOut()
         genieReach = nil
-        guard windowGenie.expand(window, from: notch.genieTarget()) else {
+        guard windowGenie.expand(window, from: notch.genieTarget(), launched: launched) else {
             genieLog("stop: genie refused")
-            hide()
+            if !isOverlayGoingIn { hide() } else { notch.dismiss() }
             windows.showMainWindow()
             return
         }
-        if isFloatingShowing {
+        if isOverlayGoingIn {
+            // Its tail finishes going in under the notch as the window comes out.
+        } else if fadingFloating {
             fadeAwayFloating()
         } else {
             hideFloating()
@@ -630,6 +698,17 @@ final class OverlayPanelController: NotchPanelControllerDelegate {
     private var overlayReach: CGFloat?
 
     private func overlayGenieProgressed(_ direction: WindowGenieController.Direction, progress: CGFloat, slide: CGFloat) {
+        if let handoff = stopHandoff, direction == .collapse {
+            // Sucked in on stop: the notch reaches for it, then the main window takes over.
+            if handoff == .early, slide >= 0.65 {
+                handOffStop()
+            } else {
+                setOverlayReach(OverlayPhysics.smoothstep(0.15, 0.6, progress))
+            }
+            return
+        }
+        // The main window is pouring out of the notch: it owns the reach.
+        if presentation == .hidden, windowGenie.direction == .expand { return }
         guard presentation != .hidden else {
             setOverlayReach(0)
             return
@@ -649,10 +728,16 @@ final class OverlayPanelController: NotchPanelControllerDelegate {
 
     private func overlayGenieFinished(_ direction: WindowGenieController.Direction, completed: Bool) {
         overlayReach = nil
+        if stopHandoff != nil, direction == .collapse {
+            // In, or cut short (hidden): the window comes out either way. Showing the overlay
+            // again clears the handoff before it cancels this.
+            handOffStop()
+        }
         switch direction {
         case .collapse:
             if presentation == .hidden {
-                notch.setReach(0)
+                // Unless the main window is pouring out of it.
+                if windowGenie.direction != .expand { notch.setReach(0) }
             } else if completed, !isOverlayAbsorbed {
                 notch.absorb()
             }

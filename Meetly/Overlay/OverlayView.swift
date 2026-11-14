@@ -62,7 +62,7 @@ struct OverlayView: View {
 
     var body: some View {
         Group {
-            if sessionManager.isMeetingActive {
+            if sessionManager.isMeetingActive || motion?.holdsMeetingLayout == true {
                 meetingOverlay
             } else {
                 idleOverlay

@@ -153,6 +153,8 @@ final class WindowGenieController: NSObject {
 
     private static let substep = 1.0 / 240
     private let spring: LiquidSpring.Params
+    /// This run's spring: `spring`, or a slower one a caller asked for.
+    private var runSpring: LiquidSpring.Params
     /// How much of the window, from its top, is drawn (nil: all of it). Read every frame.
     var contentHeight: (() -> CGFloat?)?
     /// Above the menu bar, so the funnel crosses it cleanly, and under the notch (+3), which
@@ -193,6 +195,7 @@ final class WindowGenieController: NSObject {
     /// `response` 0.5 is about the Dock's minimize; a small panel reads right a little quicker.
     init(response: Double = 0.5) {
         spring = LiquidSpring.Params(response: response, damping: 1)
+        runSpring = spring
         super.init()
     }
 
@@ -205,20 +208,24 @@ final class WindowGenieController: NSObject {
 
     /// Sucks `window` (on screen) into `target`. False when it can't (the warp was refused, or
     /// the window reaches above the mouth): nothing has changed, so the caller just hides it.
-    func collapse(_ window: NSWindow, into target: GenieTarget) -> Bool {
+    /// `response` overrides this controller's spring for this run (slower, to be watched).
+    func collapse(_ window: NSWindow, into target: GenieTarget, response: Double? = nil) -> Bool {
         if let direction {
             guard window === self.window else { return false }
             if direction == .expand { turn(.collapse) }
             return true
         }
         guard begin(window, target: target, progress: 0) else { return false }
+        runSpring = response.map { LiquidSpring.Params(response: $0, damping: 1) } ?? spring
         start(.collapse)
         return true
     }
 
     /// Pours `window` (ordered out) back out of `target` into its frame. False when it can't:
-    /// the window is left as it was, ordered out, for the caller to show plainly.
-    func expand(_ window: NSWindow, from target: GenieTarget) -> Bool {
+    /// the window is left as it was, ordered out, for the caller to show plainly. `launched`:
+    /// it leaves the mouth already moving, instead of easing out of it from rest, for when it
+    /// follows straight on from something going in (the stop's handoff from the overlay).
+    func expand(_ window: NSWindow, from target: GenieTarget, launched: Bool = false) -> Bool {
         if let direction {
             guard window === self.window else { return false }
             if direction == .collapse { turn(.expand) }
@@ -231,6 +238,15 @@ final class WindowGenieController: NSObject {
             return false
         }
         holdsFirstFrame = true
+        runSpring = spring
+        if launched {
+            // Out of the mouth at once: its first rows hide under the notch, so easing out of
+            // it from rest reads as a pause. The lead starts partway out (a velocity alone is
+            // soaked up by the damping within a few frames), so only the second spring eases in.
+            lead.value = 0.45
+            lead.velocity = -1.5
+            progress.velocity = -1.5
+        }
         start(.expand)
         return true
     }
@@ -340,9 +356,9 @@ final class WindowGenieController: NSObject {
         var remaining = elapsed * speed
         while remaining > 1e-9 {
             let dt = min(remaining, Self.substep)
-            lead.step(dt, spring)
+            lead.step(dt, runSpring)
             progress.target = lead.value
-            progress.step(dt, spring)
+            progress.step(dt, runSpring)
             remaining -= dt
         }
 
