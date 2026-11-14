@@ -52,6 +52,43 @@ enum WindowWarp {
         let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
         return CGRect(x: rect.minX, y: primaryHeight - rect.maxY, width: rect.width, height: rect.height)
     }
+
+    /// Makes the WindowServer draw a window that's poured out of a warp. A window without a
+    /// shadow (the floating overlay) ordered in squeezed into the mouth isn't drawn as the mesh
+    /// grows back, until the warp is cleared: the pour-out played invisibly and the panel just
+    /// appeared at the end. Turning the shadow on for its first frames fixes that; it's still
+    /// squeezed under the notch then, so the shadow never shows. Those frames must draw some of
+    /// the window: if the shadow goes off while every row is still piled into the mouth (a
+    /// tear-off held right where the notch gave way), it's invisible again.
+    struct PourOutKick {
+        private var savedShadow: Bool?
+        private var framesLeft = 0
+
+        /// Call as the pour-out starts, before the first warp.
+        mutating func begin(_ window: NSWindow) {
+            guard !window.hasShadow else { return }
+            savedShadow = false
+            framesLeft = 2
+            window.hasShadow = true
+        }
+
+        /// Call every display frame, after warping it to `progress`; it ends itself after two
+        /// frames that show some of the window.
+        mutating func frame(_ window: NSWindow, progress: CGFloat) {
+            guard framesLeft > 0, GenieMesh.phases(progress).slide < 0.999 else { return }
+            framesLeft -= 1
+            if framesLeft == 0 { end(window) }
+        }
+
+        /// Call on every way out, too.
+        mutating func end(_ window: NSWindow) {
+            if let savedShadow {
+                window.hasShadow = savedShadow
+            }
+            savedShadow = nil
+            framesLeft = 0
+        }
+    }
 }
 
 /// Where the genie funnels a window into: a horizontal mouth, in CoreGraphics global space.
@@ -60,6 +97,15 @@ struct GenieTarget: Equatable {
     /// The mouth's line, just inside the notch so the notch hides it.
     var y: CGFloat
     var width: CGFloat
+
+    /// The display the mouth is on.
+    @MainActor
+    var screen: NSScreen? {
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        // Just inside the mouth line, so a mouth on a display's top edge counts as on it.
+        let point = CGPoint(x: centerX, y: primaryHeight - y - 1)
+        return NSScreen.screens.first { $0.frame.contains(point) }
+    }
 }
 
 /// The macOS minimize "genie", aimed up into the notch. Pure geometry, so it can be stepped and
@@ -179,6 +225,7 @@ final class WindowGenieController: NSObject {
     /// The expand's first tick only fades the (fully collapsed) window in, giving it a frame to
     /// draw its page while it's still squeezed into the notch.
     private var holdsFirstFrame = false
+    private var kick = WindowWarp.PourOutKick()
     private var watchdog: Task<Void, Never>?
     /// A finished collapse leaves the window invisible (alpha 0, still warped into the notch)
     /// rather than ordering it out right away: ordering the key window out stalls the main
@@ -233,7 +280,9 @@ final class WindowGenieController: NSObject {
         }
         finishHiding()
         window.alphaValue = 0
+        kick.begin(window)
         guard begin(window, target: target, progress: 1) else {
+            kick.end(window)
             window.alphaValue = 1
             return false
         }
@@ -308,19 +357,11 @@ final class WindowGenieController: NSObject {
         // Paced by the display the mouth is on, not the window's own link: a window dragged
         // (or flung) mostly off its display stops getting its own frames, which froze the
         // genie until the watchdog cut it to the end.
-        let link = Self.screen(containing: target)?.displayLink(target: self, selector: #selector(tick(_:)))
+        let link = target.screen?.displayLink(target: self, selector: #selector(tick(_:)))
             ?? window.displayLink(target: self, selector: #selector(tick(_:)))
         link.add(to: .main, forMode: .common)
         displayLink = link
         lastTimestamp = nil
-    }
-
-    /// The display the mouth is on (CoreGraphics global space, y down).
-    private static func screen(containing target: GenieTarget) -> NSScreen? {
-        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
-        // Just inside the mouth line, so a mouth on a display's top edge counts as on it.
-        let point = CGPoint(x: target.centerX, y: primaryHeight - target.y - 1)
-        return NSScreen.screens.first { $0.frame.contains(point) }
     }
 
     /// Turns around mid-flight, keeping the momentum.
@@ -364,10 +405,12 @@ final class WindowGenieController: NSObject {
 
         let isDone = direction == .collapse ? progress.value >= 1 : progress.value <= Self.expandEnd
         let g = isDone ? (direction == .collapse ? 1 : 0) : CGFloat(min(max(progress.value, 0), 1))
-        // Read again every frame: the floating overlay pours out while it's being dragged.
+        // Read again every frame, in case the window is moved while it runs. (The tear-off, which
+        // pours the overlay out under a moving pointer, has its own driver: `NotchTearOff`.)
         frame = WindowWarp.globalRect(window.frame)
         let mesh = GenieMesh.points(window: frame, target: target, progress: g, contentHeight: contentHeight?())
         let isWarped = WindowWarp.set(window, columns: GenieMesh.columns, rows: GenieMesh.rows, mesh: mesh)
+        kick.frame(window, progress: g)
         onProgress?(direction, g, GenieMesh.phases(g).slide)
         #if DEBUG
         traceFrame(start: tickStart)
@@ -430,6 +473,7 @@ final class WindowGenieController: NSObject {
             window.animationBehavior = saved.animation
         }
         saved = nil
+        kick.end(window)
         window.alphaValue = 1
     }
 

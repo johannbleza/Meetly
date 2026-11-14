@@ -14,13 +14,17 @@ private final class NotchPanel: NSPanel {
     }
 }
 
-/// Callbacks for the overlay being pulled off the notch. The overlay controller pours the
-/// floating overlay out of the notch under the pointer and keeps moving it for the rest of the drag.
+/// Callbacks for the overlay being pulled out of the notch. Once the pull gives way, the overlay
+/// controller pulls the floating overlay out of the notch under the pointer (`NotchTearOff`) and
+/// keeps moving it for the rest of the drag. Points are AppKit screen coordinates.
 @MainActor
 protocol NotchPanelControllerDelegate: AnyObject {
-    func notchDidTearOff(at mouse: CGPoint)
-    func notchDetachedDragMoved(to mouse: CGPoint)
-    func notchDetachedDragEnded(velocity: CGVector)
+    /// The pull gave way: the overlay starts coming out of the notch under `mouse`.
+    func notchPullGaveWay(at mouse: CGPoint)
+    /// `pull`: how far the pointer is below where the pull started.
+    func notchPullMoved(to mouse: CGPoint, pull: CGFloat)
+    /// `velocity` is in points per second, y up.
+    func notchPullEnded(at mouse: CGPoint, pull: CGFloat, velocity: CGVector)
 }
 
 /// Shows the overlay as a shape growing out of the notch.
@@ -40,7 +44,10 @@ final class NotchPanelController {
     private var hoverCandidateSince: TimeInterval?
     private var outsideSince: TimeInterval?
     private var isTrackingDrag = false
-    private var hasTornOff = false
+    /// The pull gave way: the rest of the drag belongs to the overlay coming out of the notch.
+    private var hasGivenWay = false
+    /// A DEBUG scripted pull is playing: no mouse button is down, and that's fine.
+    private var isScriptedPull = false
     /// Screen point where the current pull started.
     private var dragStart: CGPoint?
     private var dragVelocity = VelocityTracker()
@@ -48,8 +55,6 @@ final class NotchPanelController {
     private var presentTask: Task<Void, Never>?
     private var screenObserver: NSObjectProtocol?
 
-    /// Pulling this far (pointer distance) tears the overlay off.
-    private let tearDistance: CGFloat = 120
     /// How far the hovered notch can be dragged open before more drag starts pulling it off.
     static let maxHistoryHeight: CGFloat = 320
     private var historyAtDragStart: CGFloat = 0
@@ -312,16 +317,19 @@ final class NotchPanelController {
     /// Works in screen coordinates from `NSEvent.mouseLocation`, because the drag keeps
     /// steering the floating overlay long after it leaves this panel.
     func pullChanged(translation: CGSize, resizing: Bool = false) {
-        let mouse = NSEvent.mouseLocation
+        trackPull(to: NSEvent.mouseLocation, translation: translation, resizing: resizing)
+    }
+
+    /// `translation` is the gesture's own (y down), used once to recover where the pull began.
+    private func trackPull(to mouse: CGPoint, translation: CGSize, resizing: Bool) {
         if dragStart == nil {
-            // The gesture reports its own translation (y down); recover where it began.
             let start = CGPoint(x: mouse.x - translation.width, y: mouse.y + translation.height)
             dragStart = start
             isResizeDrag = resizing
             dragVelocity.reset()
             dragVelocity.add(start)
             isTrackingDrag = true
-            hasTornOff = false
+            hasGivenWay = false
             panel?.ignoresMouseEvents = false
             growsHistory = isResizeDrag && model.canGrowHistory
             historyAtDragStart = model.historyHeight
@@ -344,20 +352,24 @@ final class NotchPanelController {
     }
 
     func pullEnded() {
+        endPull(at: NSEvent.mouseLocation)
+    }
+
+    private func endPull(at mouse: CGPoint) {
         guard let start = dragStart else { return }
-        let mouse = NSEvent.mouseLocation
         dragVelocity.add(mouse)
         dragStart = nil
         dragEnded(
             translation: CGSize(width: mouse.x - start.x, height: start.y - mouse.y),
+            mouse: mouse,
             velocity: dragVelocity.velocity()
         )
     }
 
     /// `translation` is in points with down and right positive.
     private func dragChanged(translation: CGSize, mouse: CGPoint) {
-        if hasTornOff {
-            delegate?.notchDetachedDragMoved(to: mouse)
+        if hasGivenWay {
+            delegate?.notchPullMoved(to: mouse, pull: translation.height)
             return
         }
         guard canTearOff else { return }
@@ -381,20 +393,20 @@ final class NotchPanelController {
             return
         }
         if updatePull(translation) {
-            tearOff(at: mouse)
+            giveWay(at: mouse)
         }
     }
 
     /// Stretches the notch for a pull of `translation` (down and right positive).
-    /// Returns true once it's far enough to tear.
+    /// Returns true once it's far enough to give way.
     @discardableResult
     private func updatePull(_ translation: CGSize) -> Bool {
-        if translation.height >= tearDistance {
+        if translation.height >= NotchTearOff.giveWay {
             return true
         }
         let down = max(translation.height, 0)
         let up = min(translation.height, 0)
-        // The notch only gives a little, then tears off into the genie.
+        // The notch only gives a little, then the overlay starts coming out of it.
         var transaction = Transaction()
         transaction.disablesAnimations = true
         withTransaction(transaction) {
@@ -408,14 +420,14 @@ final class NotchPanelController {
     }
 
     /// `velocity` is in AppKit screen coordinates (y up).
-    private func dragEnded(translation: CGSize, velocity: CGVector) {
+    private func dragEnded(translation: CGSize, mouse: CGPoint, velocity: CGVector) {
         defer {
             isTrackingDrag = false
-            hasTornOff = false
+            hasGivenWay = false
         }
 
-        if hasTornOff {
-            delegate?.notchDetachedDragEnded(velocity: velocity)
+        if hasGivenWay {
+            delegate?.notchPullEnded(at: mouse, pull: translation.height, velocity: velocity)
             return
         }
         let downVelocity = -velocity.dy
@@ -429,9 +441,10 @@ final class NotchPanelController {
             }
             return
         }
-        if canTearOff, translation.height >= 50, downVelocity >= 800 {
-            tearOff(at: NSEvent.mouseLocation)
-            delegate?.notchDetachedDragEnded(velocity: velocity)
+        // A flick so quick the drag never reported the give-way: it still comes out.
+        if canTearOff, translation.height >= NotchTearOff.giveWay, downVelocity >= NotchTearOff.flickVelocity {
+            giveWay(at: mouse)
+            delegate?.notchPullEnded(at: mouse, pull: translation.height, velocity: velocity)
             return
         }
 
@@ -445,16 +458,60 @@ final class NotchPanelController {
     }
 
     /// The pull gives way: the notch closes into one reaching for the funnel the floating
-    /// overlay pours out of (`setReach` lets it go).
-    private func tearOff(at mouse: CGPoint) {
-        hasTornOff = true
+    /// overlay is pulled out of (`setReach` lets it go, `absorb` takes it back).
+    private func giveWay(at mouse: CGPoint) {
+        hasGivenWay = true
         OverlayPhysics.haptic(.levelChange)
         withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
             model.pull = .zero
         }
         beginPouringOut()
-        delegate?.notchDidTearOff(at: mouse)
+        delegate?.notchPullGaveWay(at: mouse)
     }
+
+    #if DEBUG
+    private var scriptedPullTask: Task<Void, Never>?
+
+    /// Plays a pull as if the pointer dragged the notch from its middle along `path` (seconds
+    /// from the start, offsets in points with down and right positive), then lets go. For
+    /// recording the tear-off without a mouse (`SessionManager.debugApplyNotchDemo`).
+    func debugScriptedPull(_ path: [(time: Double, offset: CGSize)]) {
+        guard let last = path.last, isVisible else { return }
+        scriptedPullTask?.cancel()
+        let shape = screenRect(forWindowRect: model.shapeFrame)
+        let origin = shape.isEmpty
+            ? CGPoint(x: model.metrics.centerX, y: model.metrics.screenFrame.maxY - model.metrics.notchSize.height / 2)
+            : CGPoint(x: shape.midX, y: shape.midY)
+        func point(at time: Double) -> (mouse: CGPoint, offset: CGSize) {
+            var offset = last.offset
+            for (from, to) in zip(path, path.dropFirst()) where time <= to.time {
+                let t = to.time > from.time ? (time - from.time) / (to.time - from.time) : 1
+                let progress = CGFloat(min(max(t, 0), 1))
+                offset = CGSize(
+                    width: from.offset.width + (to.offset.width - from.offset.width) * progress,
+                    height: from.offset.height + (to.offset.height - from.offset.height) * progress
+                )
+                break
+            }
+            return (CGPoint(x: origin.x + offset.width, y: origin.y - offset.height), offset)
+        }
+        isScriptedPull = true
+        scriptedPullTask = Task { @MainActor [weak self] in
+            let began = CACurrentMediaTime()
+            while let self, !Task.isCancelled {
+                let time = min(CACurrentMediaTime() - began, last.time)
+                let sample = point(at: time)
+                self.trackPull(to: sample.mouse, translation: sample.offset, resizing: false)
+                if time >= last.time {
+                    self.endPull(at: sample.mouse)
+                    break
+                }
+                try? await Task.sleep(for: .milliseconds(8))
+            }
+            self?.isScriptedPull = false
+        }
+    }
+    #endif
 
     // MARK: - Panel
 
@@ -585,7 +642,7 @@ final class NotchPanelController {
     private func pointerTick() {
         guard let panel, panel.isVisible else { return }
         // A gesture can be cancelled without an end callback; don't stay stuck mid-pull.
-        if isTrackingDrag, NSEvent.pressedMouseButtons & 1 == 0 {
+        if isTrackingDrag, NSEvent.pressedMouseButtons & 1 == 0, !isScriptedPull {
             pullEnded()
         }
         let mouse = NSEvent.mouseLocation

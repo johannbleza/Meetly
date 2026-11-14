@@ -42,8 +42,10 @@ final class OverlayPanelController: NotchPanelControllerDelegate {
     /// Sucks the main window into the notch as a meeting starts, and pours it back out.
     let windowGenie = WindowGenieController()
     /// The same genie for the floating overlay: docking sucks it up into the notch, and
-    /// detaching (pop-out, or a pull that tears it off) pours it back out.
+    /// popping out pours it back out.
     let overlayGenie = WindowGenieController(response: 0.42)
+    /// Pulling the notch: the floating overlay is pulled out of it by the drag.
+    let tearOff = NotchTearOff()
 
     private var panel: KeyablePanel?
     private weak var sessionManager: SessionManager?
@@ -71,10 +73,21 @@ final class OverlayPanelController: NotchPanelControllerDelegate {
         windowGenie.onFinish = { [weak self] direction, completed in
             self?.genieFinished(direction, completed: completed)
         }
-        overlayGenie.contentHeight = { [weak self] in
+        let panelContentHeight: () -> CGFloat? = { [weak self] in
             guard let self else { return nil }
             // The drawn panel plus its shadow; a guess until the view has measured it.
             return self.motion.panelHeight > 0 ? self.motion.panelHeight + 28 : 360
+        }
+        overlayGenie.contentHeight = panelContentHeight
+        tearOff.contentHeight = panelContentHeight
+        tearOff.onProgress = { [weak self] phase, progress, slide in
+            self?.tearOffProgressed(phase, progress: progress, slide: slide)
+        }
+        tearOff.onCommit = { [weak self] in
+            self?.sessionManager?.setOverlayDock(.floating)
+        }
+        tearOff.onFinish = { [weak self] outcome in
+            self?.tearOffFinished(outcome)
         }
         overlayGenie.onProgress = { [weak self] direction, progress, slide in
             self?.overlayGenieProgressed(direction, progress: progress, slide: slide)
@@ -114,6 +127,7 @@ final class OverlayPanelController: NotchPanelControllerDelegate {
     /// Opens on the display under the pointer when it was hidden, or when `followingPointer`
     /// asks to bring it over from another display.
     func show(followingPointer: Bool = false) {
+        endTearOff()
         stopHandoff = nil
         motion.holdsMeetingLayout = false
         if followingPointer || presentation == .hidden {
@@ -130,6 +144,7 @@ final class OverlayPanelController: NotchPanelControllerDelegate {
     }
 
     func hide() {
+        endTearOff()
         presentation = .hidden
         hideFloating()
         notch.dismiss()
@@ -144,6 +159,7 @@ final class OverlayPanelController: NotchPanelControllerDelegate {
 
     /// Gives `SCContentSharingPicker` the key window it needs, in whichever form the overlay is in.
     func presentKeyWindowForPicker() {
+        endTearOff()
         if !(dock == .notch ? notch.isVisible : isFloatingVisible) {
             moveToActiveScreen()
         }
@@ -178,6 +194,7 @@ final class OverlayPanelController: NotchPanelControllerDelegate {
     /// not on the display the notch opens on.
     func showAbsorbingMainWindow() {
         let windows = MainWindowController.shared
+        endTearOff()
         stopHandoff = nil
         motion.holdsMeetingLayout = false
         if windowGenie.direction == .expand, let window = windows.window {
@@ -227,6 +244,8 @@ final class OverlayPanelController: NotchPanelControllerDelegate {
     /// the overlay and shows the window when it can't.
     func hideIntoMainWindow() {
         let windows = MainWindowController.shared
+        // Committed, it's left out whole and goes in with the rest of the floating overlay.
+        endTearOff()
         let isFloatingShowing = dock == .floating && isFloatingVisible
         presentation = .hidden
         stopHandoff = nil
@@ -451,6 +470,7 @@ final class OverlayPanelController: NotchPanelControllerDelegate {
     /// closes into one reaching for the funnel, and the panel pours out of it to where it
     /// last floated.
     func popOut() {
+        endTearOff()
         presentation = .expanded
         let target = lastFloatingOrigin ?? defaultFloatingOrigin()
         lastFloatingOrigin = target
@@ -469,17 +489,128 @@ final class OverlayPanelController: NotchPanelControllerDelegate {
         }
     }
 
-    /// Pulled off the notch: the panel pours out of it under the pointer, which holds its
-    /// toolbar, and the funnel follows the rest of the drag.
-    func notchDidTearOff(at mouse: CGPoint) {
+    // MARK: - Pulling it out of the notch (NotchPanelControllerDelegate)
+
+    /// The pull gave way: the panel starts coming out of the notch's mouth, drawn under the
+    /// pointer, which holds its toolbar. How far it's out follows the drag (`NotchTearOff`).
+    func notchPullGaveWay(at mouse: CGPoint) {
+        endTearOff()
         presentation = .expanded
         detachedGrabOffset = CGPoint(x: Self.canvasWidth / 2, y: 18)
         let origin = origin(forPointer: mouse)
-        guard !reduceMotion, pourOutFloating(at: origin) else {
+        guard !reduceMotion, beginTearOff(at: origin) else {
             genieLog("tear off: no genie (reduce motion \(reduceMotion))")
             notch.setReach(0)
             placeFloating(at: origin)
             return
+        }
+    }
+
+    func notchPullMoved(to mouse: CGPoint, pull: CGFloat) {
+        let origin = origin(forPointer: mouse)
+        if tearOff.isRunning {
+            tearOff.pointerMoved(drawnOrigin: origin, pull: pull)
+            return
+        }
+        // All the way out (or shown without the genie): the rest is a plain floating drag,
+        // which can carry it back up to dock.
+        guard let panel, panel.isVisible else { return }
+        windowAnimator?.stop()
+        panel.setFrameOrigin(origin)
+        floatingDragMoved()
+    }
+
+    func notchPullEnded(at mouse: CGPoint, pull: CGFloat, velocity: CGVector) {
+        if tearOff.isRunning {
+            tearOff.released(
+                velocity: velocity,
+                restingOrigin: restingOrigin(from: origin(forPointer: mouse), velocity: velocity)
+            )
+            return
+        }
+        guard panel?.isVisible == true else { return }
+        floatingDragEnded(velocity: velocity)
+    }
+
+    /// Orders the panel in squeezed into the notch's mouth, parked at `origin` (where it'll be
+    /// drawn as it comes out). False when the warp can't run: the panel is left ordered out.
+    private func beginTearOff(at origin: CGPoint) -> Bool {
+        rebuildPanelIfNeeded()
+        guard let panel else { return false }
+        // Whatever it was doing (e.g. the tail of a dock), it starts over squeezed into the mouth.
+        panel.alphaValue = 0
+        hideFloating()
+        isDockReady = false
+        // Parked where it'll be drawn: it isn't moved again while it's warped.
+        panel.setFrameOrigin(origin)
+        panel.ignoresMouseEvents = false
+        ScreenShareExclusion.apply(to: panel)
+        panel.contentView?.layoutSubtreeIfNeeded()
+        overlayReach = nil
+        isTearOffAbsorbed = false
+        return tearOff.begin(panel, mouth: notch.genieTarget(), drawnOrigin: origin)
+    }
+
+    /// Ends a running tear-off for something else that needs the panel: once committed it's
+    /// left out whole where it's drawn, otherwise it's ordered out (the overlay stays docked).
+    private func endTearOff() {
+        guard tearOff.isRunning else { return }
+        if tearOff.cancel(), let panel {
+            lastFloatingOrigin = panel.frame.origin
+        }
+        overlayReach = nil
+        isTearOffAbsorbed = false
+    }
+
+    /// The notch took the overlay back (so it isn't opened twice).
+    private var isTearOffAbsorbed = false
+
+    private func tearOffProgressed(_ phase: NotchTearOff.Phase, progress: CGFloat, slide: CGFloat) {
+        if phase == .returning {
+            guard !isTearOffAbsorbed else { return }
+            if slide >= 0.85 {
+                // Most of it is back in: the notch gulps and opens over the rest.
+                isTearOffAbsorbed = true
+                overlayReach = nil
+                notch.absorb()
+                return
+            }
+        }
+        // Reaching down for the funnel while it's close, letting go as it leaves.
+        setOverlayReach(OverlayPhysics.smoothstep(0.15, 0.6, progress))
+    }
+
+    private func tearOffFinished(_ outcome: NotchTearOff.Outcome) {
+        overlayReach = nil
+        switch outcome {
+        case let .out(isHeld, restingOrigin, velocity):
+            notch.setReach(0)
+            guard let panel else { return }
+            lastFloatingOrigin = panel.frame.origin
+            if isHeld {
+                // Still in hand: the notch reaches again if it's carried back up.
+                floatingDragMoved()
+            } else if let restingOrigin {
+                lastFloatingOrigin = restingOrigin
+                let distance = hypot(restingOrigin.x - panel.frame.origin.x, restingOrigin.y - panel.frame.origin.y)
+                if distance > 0.5 || velocity.magnitude > 5 {
+                    animator()?.animate(
+                        to: restingOrigin,
+                        initialVelocity: velocity,
+                        spring: OverlayPhysics.Springs.windowFling
+                    )
+                }
+            }
+        case .backIn:
+            if !isTearOffAbsorbed {
+                notch.absorb()
+            }
+            isTearOffAbsorbed = false
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                motion.reset()
+            }
         }
     }
 
@@ -520,16 +651,6 @@ final class OverlayPanelController: NotchPanelControllerDelegate {
         motion.reset()
         panel.setFrameOrigin(origin)
         showFloating()
-    }
-
-    func notchDetachedDragMoved(to mouse: CGPoint) {
-        windowAnimator?.stop()
-        panel?.setFrameOrigin(origin(forPointer: mouse))
-        floatingDragMoved()
-    }
-
-    func notchDetachedDragEnded(velocity: CGVector) {
-        floatingDragEnded(velocity: velocity)
     }
 
     private func origin(forPointer mouse: CGPoint) -> CGPoint {
@@ -624,12 +745,7 @@ final class OverlayPanelController: NotchPanelControllerDelegate {
         guard let panel else { return }
         let current = panel.frame.origin
         let isFling = velocity.magnitude > 500
-        var target = current
-        if isFling {
-            target.x += OverlayPhysics.project(velocity.dx)
-            target.y += OverlayPhysics.project(velocity.dy)
-        }
-        target = clampedOrigin(target)
+        let target = restingOrigin(from: current, velocity: velocity)
         lastFloatingOrigin = target
         guard isFling || hypot(target.x - current.x, target.y - current.y) > 0.5 else { return }
         animator()?.animate(
@@ -637,6 +753,16 @@ final class OverlayPanelController: NotchPanelControllerDelegate {
             initialVelocity: isFling ? velocity : .zero,
             spring: OverlayPhysics.Springs.windowFling
         )
+    }
+
+    /// Where a panel let go at `origin` comes to rest: carried on by a fling, kept on screen.
+    private func restingOrigin(from origin: CGPoint, velocity: CGVector) -> CGPoint {
+        var target = origin
+        if velocity.magnitude > 500 {
+            target.x += OverlayPhysics.project(velocity.dx)
+            target.y += OverlayPhysics.project(velocity.dy)
+        }
+        return clampedOrigin(target)
     }
 
     /// Keeps the panel's top edge, where the toolbar is, on screen and out of the notch.
@@ -658,6 +784,7 @@ final class OverlayPanelController: NotchPanelControllerDelegate {
     /// Docks like minimize: the floating panel is sucked up into the notch's mouth, and the
     /// notch reaches for it and gulps open over the last of it.
     func dockOverlay(velocity: CGVector = .zero) {
+        endTearOff()
         presentation = .expanded
         guard let panel, isFloatingVisible else {
             sessionManager?.setOverlayDock(.notch)
@@ -764,6 +891,7 @@ final class OverlayPanelController: NotchPanelControllerDelegate {
     // MARK: - Floating panel
 
     private func showFloating() {
+        endTearOff()
         rebuildPanelIfNeeded()
         guard let panel else { return }
         if overlayGenie.direction == .collapse {
@@ -782,6 +910,7 @@ final class OverlayPanelController: NotchPanelControllerDelegate {
     }
 
     private func hideFloating() {
+        endTearOff()
         overlayGenie.cancel(hiding: true)
         windowAnimator?.stop()
         panel?.orderOut(nil)
@@ -809,6 +938,7 @@ final class OverlayPanelController: NotchPanelControllerDelegate {
     /// the user is working on. The floating panel keeps its spot if it's already there.
     /// Moves the overlay to `screen`, or by default to the display under the pointer.
     private func moveToActiveScreen(_ screen: NSScreen? = nil) {
+        endTearOff()
         guard let screen = screen ?? NotchMetrics.activeScreen() else { return }
         // In floating mode too, so docking flies to this display's notch.
         notch.relocate(to: NotchMetrics.metrics(for: screen))

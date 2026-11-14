@@ -1322,6 +1322,33 @@ extension SessionManager {
             popOutOverlay()
         case "dock":
             dockOverlay()
+        case "tearOff":
+            // Pulled down and out of the notch, held a moment, let go: it comes out.
+            OverlayPanelController.shared.notch.debugScriptedPull([
+                (0, .zero), (0.7, CGSize(width: 80, height: 260)), (1.0, CGSize(width: 80, height: 260)),
+            ])
+        case "tearHold":
+            // Held still right where the notch gave way, then pulled out: it must still be drawn.
+            OverlayPanelController.shared.notch.debugScriptedPull([
+                (0, .zero), (0.1, CGSize(width: 0, height: 28.2)), (0.75, CGSize(width: 0, height: 28.2)),
+                (1.35, CGSize(width: 60, height: 260)), (1.6, CGSize(width: 60, height: 260)),
+            ])
+        case "tearFlick":
+            // A quick flick down: it comes out with the throw.
+            OverlayPanelController.shared.notch.debugScriptedPull([
+                (0, .zero), (0.08, CGSize(width: 0, height: 70)),
+            ])
+        case "tearCancel":
+            // Pulled a little, held, let go: it's swallowed back and the notch reopens.
+            OverlayPanelController.shared.notch.debugScriptedPull([
+                (0, .zero), (0.6, CGSize(width: 10, height: 75)), (1.0, CGSize(width: 10, height: 75)),
+            ])
+        case "tearBack":
+            // Pulled partway, pushed back up, let go: it goes back in as it's pushed.
+            OverlayPanelController.shared.notch.debugScriptedPull([
+                (0, .zero), (0.5, CGSize(width: 0, height: 120)), (0.8, CGSize(width: 0, height: 120)),
+                (1.3, CGSize(width: 0, height: 10)), (1.5, CGSize(width: 0, height: 10)),
+            ])
         case "picker":
             // The real share-picker path a meeting start takes with the main window hidden, so
             // the overlay (here, the notch) has to be the picker's key window. Records nothing.
