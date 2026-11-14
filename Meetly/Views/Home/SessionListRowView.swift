@@ -36,11 +36,17 @@ extension MeetingItemActions {
             onTogglePin: isArchived ? nil : {
                 PinStaging.shared.toggle(session, context: context)
             },
+            // Animated, so the row rolls out of its line (the rows below glide up), an emptied
+            // day heading rolls away with it, and the featured meeting rolls to the next one.
             onArchive: isArchived || isInUse ? nil : {
-                SessionActions.archive(session, context: context)
+                withAnimation(AppMotion.resolved(AppMotion.content)) {
+                    SessionActions.archive(session, context: context)
+                }
             },
             onUnarchive: isArchived ? {
-                SessionActions.unarchive(session, context: context)
+                withAnimation(AppMotion.resolved(AppMotion.content)) {
+                    SessionActions.unarchive(session, context: context)
+                }
             } : nil,
             onExport: {
                 MeetingMarkdownExporter.export(session)

@@ -43,6 +43,7 @@ struct MeetingsHomeView: View {
     /// Whether the last layout switch went right in the control (the new layout slides in from
     /// the trailing edge) or left.
     @State private var layoutForward = true
+    @State private var showDeleteAllConfirmation = false
 
     private static let columnWidth = AppTheme.pageMaxWidth
     /// Meetings rendered eagerly at the top of the list (whole day groups until this many). The
@@ -67,6 +68,12 @@ struct MeetingsHomeView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         // See-through while the meeting page is underneath: the band and the curtain cover it.
         .background { AppTheme.bgPrimary.opacity(hero == nil ? 1 : 0) }
+        .alert("Delete all archived meetings?", isPresented: $showDeleteAllConfirmation) {
+            Button("Cancel", role: .cancel) {}
+            Button("Delete All", role: .destructive, action: deleteAllArchived)
+        } message: {
+            Text("This permanently removes every archived meeting and cannot be undone.")
+        }
     }
 
     /// How far the list slides between Meetings and Archived: the page's width.
@@ -110,14 +117,23 @@ struct MeetingsHomeView: View {
 
             Group {
                 if let featured = featuredSession {
-                    FeaturedMeetingCard(
-                        session: featured,
-                        isRecording: isRecording(featured),
-                        summaryShift: (hero?.summaryShift ?? 0) * heroProgress,
-                        heroProgress: hero == nil ? nil : heroProgress
-                    ) {
-                        onOpenFeatured(featured)
+                    // A new featured meeting (the latest archived, a meeting pinned) slides in
+                    // from the right as the old one slides out left, like the list between
+                    // Meetings and Archived, and the band's height glides from one to the other.
+                    SlideStack {
+                        FeaturedMeetingCard(
+                            session: featured,
+                            isRecording: isRecording(featured),
+                            summaryShift: (hero?.summaryShift ?? 0) * heroProgress,
+                            heroProgress: hero == nil ? nil : heroProgress
+                        ) {
+                            onOpenFeatured(featured)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .id(featured.id)
+                        .transition(.slideAcross(distance: pageWidth))
                     }
+                    // Measured outside the slide, so the outgoing card never reports its frame.
                     .offset(y: (hero?.lift ?? 0) * heroProgress)
                     .onGeometryChange(for: CGRect.self) { proxy in
                         proxy.frame(in: .named(MeetingHeroAnchor.coordinateSpace))
@@ -147,12 +163,13 @@ struct MeetingsHomeView: View {
         }
     }
 
-    /// The meeting being recorded, or else the most recent one.
+    /// The meeting being recorded, or else the most recently pinned one (the top of Pinned), or
+    /// else the latest one. Pinning, unpinning and archiving slide the card to the new one.
     private var featuredSession: MeetingSession? {
         if sessionManager.state != .idle, let current = sessionManager.currentSession {
             return current
         }
-        return activeSessions.first
+        return pinnedSessions.first ?? activeSessions.first
     }
 
     private func isRecording(_ session: MeetingSession) -> Bool {
@@ -192,6 +209,18 @@ struct MeetingsHomeView: View {
                 layoutContent(filter)
                     .id(layout)
                     .transition(.slide(forward: layoutForward, distance: pageWidth))
+            }
+            // Part of the Archived list, on its first heading's line, so it slides in and out
+            // with the list rather than waiting in the header.
+            .overlay(alignment: .topTrailing) {
+                if filter == .archived && layout != .calendar && !archivedSessions.isEmpty {
+                    DetailPillButton(title: "Delete All", systemImage: "trash") {
+                        showDeleteAllConfirmation = true
+                    }
+                    // Centered on the heading's line (13 pt text, the pill is 28 pt).
+                    .offset(y: -6)
+                    .transition(.slide(forward: layoutForward, distance: pageWidth))
+                }
             }
             .id(filter)
             .transition(Self.filterSlide(filter, distance: pageWidth))
@@ -456,6 +485,15 @@ struct MeetingsHomeView: View {
         }
     }
 
+    /// Every archived meeting except one being recorded into. The rows roll away as the list
+    /// closes up.
+    private func deleteAllArchived() {
+        let deletable = archivedSessions.filter { !sessionManager.isInUse($0) }
+        withAnimation(AppMotion.resolved(AppMotion.content)) {
+            SessionActions.deleteAllArchived(deletable, context: modelContext)
+        }
+    }
+
     private func actions(for session: MeetingSession) -> MeetingItemActions {
         MeetingItemActions.standard(
             for: session,
@@ -684,5 +722,73 @@ private struct RollLineLayout: Layout {
             at: CGPoint(x: bounds.minX, y: bounds.minY + shift),
             proposal: ProposedViewSize(width: bounds.width, height: size.height)
         )
+    }
+}
+
+extension AnyTransition {
+    /// In from the right, out to the left, `distance` points, with no fade. The view's height
+    /// grows from zero on the way in and shrinks to zero on the way out, so in a `SlideStack`
+    /// the height glides from the old view's to the new one's.
+    static func slideAcross(distance: CGFloat) -> AnyTransition {
+        .asymmetric(
+            insertion: .modifier(active: SlideAcross(fraction: 0, x: distance), identity: SlideAcross(fraction: 1, x: distance)),
+            removal: .modifier(active: SlideAcross(fraction: 0, x: -distance), identity: SlideAcross(fraction: 1, x: -distance))
+        )
+    }
+}
+
+private struct SlideAcross: ViewModifier {
+    var fraction: CGFloat
+    /// Where the view sits while it's out.
+    var x: CGFloat
+
+    func body(content: Content) -> some View {
+        SlideAcrossLayout(fraction: fraction, x: x) { content }
+    }
+}
+
+/// Reports `fraction` of its content's height and offsets the content by the rest of `x`. The
+/// content is placed at its full height, so it hangs below while the reported height is short.
+private struct SlideAcrossLayout: Layout {
+    var fraction: CGFloat
+    var x: CGFloat
+
+    var animatableData: CGFloat {
+        get { fraction }
+        set { fraction = newValue }
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let child = subviews.first else { return .zero }
+        let size = child.sizeThatFits(ProposedViewSize(width: proposal.width, height: nil))
+        return CGSize(width: proposal.width ?? size.width, height: size.height * max(0, fraction))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard let child = subviews.first else { return }
+        let size = child.sizeThatFits(ProposedViewSize(width: bounds.width, height: nil))
+        child.place(
+            at: CGPoint(x: bounds.minX + x * (1 - fraction), y: bounds.minY),
+            proposal: ProposedViewSize(width: bounds.width, height: size.height)
+        )
+    }
+}
+
+/// Lays its views over each other at the top, as tall as their heights added up: with
+/// `slideAcross`, the outgoing view's height shrinks as the incoming one's grows, so the stack's
+/// height glides from one to the other. At rest it holds one view.
+private struct SlideStack: Layout {
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let sizes = subviews.map { $0.sizeThatFits(ProposedViewSize(width: proposal.width, height: nil)) }
+        return CGSize(
+            width: proposal.width ?? sizes.map(\.width).max() ?? 0,
+            height: sizes.map(\.height).reduce(0, +)
+        )
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for subview in subviews {
+            subview.place(at: bounds.origin, proposal: ProposedViewSize(width: bounds.width, height: nil))
+        }
     }
 }
