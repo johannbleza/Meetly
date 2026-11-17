@@ -113,7 +113,7 @@ struct TitleBarPill: View {
                         .renderingMode(.template)
                         .resizable()
                         .aspectRatio(contentMode: .fit)
-                        .frame(width: 17, height: 10)
+                        .frame(height: 9)
                 } else if let systemImage {
                     Image(systemName: systemImage)
                 }

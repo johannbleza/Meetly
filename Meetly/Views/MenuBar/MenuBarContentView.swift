@@ -241,15 +241,18 @@ struct MenuBarContentView: View {
     }
 }
 
-/// The Meets symbol, from the `MeetsSymbol` asset (`design/brand/meets-symbol.svg`, cropped).
+/// The Meets symbol, from the `MeetsSymbol` asset (`design/brand/meets-symbol-small.svg`, cropped to the ink).
 enum MeetsSymbol {
     static let assetName = "MeetsSymbol"
 
     /// Sized for the menu bar, as a template image so macOS colors it like other menu bar icons.
+    /// The width follows the asset's shape, so a redrawn symbol isn't squashed.
     @MainActor
     static func menuBarImage() -> NSImage {
-        guard let source = NSImage(named: assetName) else { return NSImage() }
-        let image = NSImage(size: NSSize(width: 20, height: 11.25), flipped: false) { rect in
+        guard let source = NSImage(named: assetName), source.size.height > 0 else { return NSImage() }
+        let height: CGFloat = 10.75
+        let width = (height * source.size.width / source.size.height).rounded()
+        let image = NSImage(size: NSSize(width: width, height: height), flipped: false) { rect in
             source.draw(in: rect)
             return true
         }
